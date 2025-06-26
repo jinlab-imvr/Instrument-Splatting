@@ -5,5 +5,5 @@ Official code implementation for [Instrument-Splatting](https://arxiv.org/abs/25
 <!--### [Project Page]() -->
 
 > [Instrument-Splatting: Controllable Photorealistic Reconstruction of Surgical Instruments Using Gaussian Splatting](https://arxiv.org/abs/2503.04082)\
-> Shuojue Yang, Zijian Wu, Mingxuan Hong, Qian Li, Daiyun Shen, Septimiu E. Salcudean, Yueming Jin\
+> Shuojue Yang*, Zijian Wu*, Mingxuan Hong, Qian Li, Daiyun Shen, Septimiu E. Salcudean, Yueming Jin\
 > Accept at MICCAI2025
