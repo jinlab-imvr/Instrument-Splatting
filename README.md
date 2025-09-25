@@ -12,7 +12,6 @@ Official code implementation for [Instrument-Splatting](https://arxiv.org/abs/25
 
 ### Pose estimation & Reconstruction quality 
 
-<video width="100%" controls>
-  <source src="assets/demo.mp4" type="video/mp4">
-  Your browser does not support the video tag.
-</video>
+
+
+https://github.com/user-attachments/assets/c5a1e684-b998-489b-960c-9d7717bfd65b
