@@ -40,7 +40,7 @@ pip install -e submodules/simple-knn
 # Install ml_aspanformer dependencies
 cd submodules/ml_aspanformer
 pip install -r requirements.txt
-pip install -e .
+
 cd ../..
 ```
 ## Dataset
