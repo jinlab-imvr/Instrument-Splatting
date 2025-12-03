@@ -246,7 +246,7 @@ def infering(gs_type, dataset, opt, pipe, exp_name):
     rmses = []
     # Training
     for i, iteration in enumerate(list(memory_pool.keys())):
-        if iteration  in testing_iterations:
+        if iteration  not in testing_iterations:
             continue
     # Testing
     # for i, iteration in enumerate(testing_iterations):
