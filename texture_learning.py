@@ -249,7 +249,7 @@ def training(gs_type, dataset, opt, pipe, testing_iterations, checkpoint_iterati
     # if os.path.exists(exp_path) == False:
     #     os.makedirs(exp_path)
     scene = InstrumentScene(dataset, gaussianModel[gs_type], dataset.sh_degree,
-                             pretrain_path = dataset.pretrain_path, pretrain_params='pretrain_param_3dgs')
+                             pretrain_path = dataset.pretrain_path, pretrain_params='pretrain_3dgs_dense_param')
     instrument = scene.instrument
     instrument.training_setup(opt)
 
@@ -316,7 +316,7 @@ def training(gs_type, dataset, opt, pipe, testing_iterations, checkpoint_iterati
     else:
         available_iterations = [it for it in available_iterations if it not in testing_iterations]
 
-    total_iterations = opt.texture_learning_iterations if dataset.infer \
+    total_iterations = opt.texture_learning_iterations if not dataset.infer \
             else len(available_iterations)
 
     for i in range(total_iterations):
