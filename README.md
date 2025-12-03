@@ -44,7 +44,7 @@ pip install -e .
 cd ../..
 ```
 ## Dataset
-Our customized datasets follow the structure in surgpose_sample (), containing
+Our customized datasets follow the structure in surgpose_sample(https://drive.google.com/file/d/1qAv-YpouDOFbf7a4epeeuXkx5GW5sCFo/view?usp=sharing), containing
 1) `color`: left RGB images after stereo rectification;
 2) `mask_all`: mask for overall instruments (not used);
 3) `depth`: depth GT with unit of mm. Estimated by stereo matching with [MonSter](https://github.com/Junda24/MonSter);
@@ -73,7 +73,7 @@ data
 To train Instrument-Splatting with customized hyper-parameters, please make changes in `arguments/__init__.py`
 
 ### Pretrained GS model
-We have uploaded our pretrained GS models to `pretrained_models`. Now we have released two options: `pretrain_3dgs_dense_param` and `pretrain_param_3dgs` with various initializations. Please choose per your `arguments/__init__.py`.
+We have uploaded our pretrained GS models to `pretrained_models`. Now we have released two options: `pretrain_3dgs_dense_param` and `pretrain_param_3dgs` with various gaussian numbers. Please choose per your `arguments/__init__.py`.
 
 ### Pose Tracking & Estimation
 To estimate per-frame instrument poses, run the following example command:
