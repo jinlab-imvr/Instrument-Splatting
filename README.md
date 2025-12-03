@@ -36,7 +36,6 @@ pip install -r requirements.txt
 # Install submodules
 pip install -e submodules/depth-diff-gaussian-rasterization
 pip install -e submodules/simple-knn
-pip install -e submodules/gaussian-rasterization
 
 # Install ml_aspanformer dependencies
 cd submodules/ml_aspanformer
@@ -46,13 +45,15 @@ cd ../..
 ```
 ## Dataset
 Our customized datasets follow the structure in surgpose_sample (), containing
-1) `mask_all`: mask for overall instruments (not used);
-2) `depth`: depth GT in the unit of mm
-3) `l_masks`: part-wise mask labeled with [SAM2](https://github.com/facebookresearch/sam2)
-4) `mappings.json`: color scalars to part (not used)
-5) `testing_iterations.txt`: iterations for testing phase
-6) `training_iterations.txt`: iterations for training phase
-7) `transforms.json`: initialized 6D wrist pose for the first frame given by PnP
+1) `color`: left RGB images after stereo rectification;
+2) `mask_all`: mask for overall instruments (not used);
+3) `depth`: depth GT with unit of mm. Estimated by stereo matching with [MonSter](https://github.com/Junda24/MonSter);
+4) `l_masks`: part-wise mask labeled with [SAM2](https://github.com/facebookresearch/sam2);
+5) `mappings.json`: color scalars to part (not used);
+6) `testing_iterations.txt`: iterations for testing phase;
+7) `training_iterations.txt`: iterations for training phase;
+8) `transforms.json`: initialized 6D wrist pose for the first frame given by PnP;
+
 The data structure is as follows:
 
 ```
@@ -70,7 +71,8 @@ data
 ## Training
 
 To train Instrument-Splatting with customized hyper-parameters, please make changes in `arguments/__init__.py`
-
+### Pretrained GS model
+We have uploaded our pretrained GS models to this link (). Please download them and save in `pretrained_models` per your `arguments/__init__.py`
 ### Pose Tracking & Estimation
 To estimate per-frame instrument poses, run the following example command:
 
@@ -91,3 +93,25 @@ To obtain the final image quality estimation, run:
 ```
 python infer.py --source_path data/surgpose_sample --exp_name exp1
 ```
+
+## Citation
+
+If you find this code useful for your research, please use the following BibTeX entries:
+
+```
+@InProceedings{Yang_InstrumentSplatting_MICCAI2025,
+        author = { Yang, Shuojue AND Wu, Zijian AND Hong, Mingxuan AND Li, Qian AND Shen, Daiyun AND Salcudean, Septimiu E. AND Jin, Yueming},
+        title = { { Instrument-Splatting: Controllable Photorealistic Reconstruction of Surgical Instruments Using Gaussian Splatting } },
+        booktitle = {proceedings of Medical Image Computing and Computer Assisted Intervention -- MICCAI 2025},
+        year = {2025},
+        publisher = {Springer Nature Switzerland},
+        volume = {LNCS 15962},
+        month = {September},
+        page = {301 -- 311}
+}
+
+```
+
+### Questions
+
+For further question about the code or paper, welcome to create an issue, or contact 's.yang@u.nus.edu'

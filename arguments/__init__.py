@@ -48,9 +48,10 @@ class ModelParams(ParamGroup):
     def __init__(self, parser, sentinel=False):
         self.sh_degree = 3
         # self._source_path = "/mnt/iMVR/shuojue/data/instrument_dataset_LND"
-        self._source_path = "/mnt/iMVR/shuojue/data/surgpose_sample"
+        self._source_path = "data/surgpose_sample"
         self.exp_dir = "experiments"
-        # self._source_path = "/mnt/iMVR/shuojue/data/endovins18"
+        self.pretrain_path = 'pretrained_models'
+        
         self._model_path = ""
         self._images = "images"
         self._resolution = -1
@@ -84,6 +85,29 @@ class OptimizationParams(ParamGroup):
         self.rotation_lr = 0.001
         self.percent_dense = 0.01
         self.lambda_dssim = 0.2
+        self.densification_interval = 100
+        self.opacity_reset_interval = 3000
+        self.densify_from_iter = 500
+        self.densify_until_iter = 15_000
+        self.densify_grad_threshold = 0.0002
+        self.random_background = False
+        super().__init__(parser, "Optimization Parameters")
+
+class OptimizationParamsInstrument(ParamGroup):
+    def __init__(self, parser):
+        self.iterations = 30_000
+        self.tracking_iterations = 1500
+        self.texture_learning_iterations = 11000
+        self.vertices_lr = 0.0016 * 1e-3 #0.0016 * 1e-3
+        self.alpha_lr = 0.001 
+        self.feature_lr = 0.0025
+        self.opacity_lr = 0.05
+        self.scaling_lr = 0.005 # 0.0005 
+        self.rotation_lr = 0.001
+        self.random_background = False
+        self.use_mesh = True
+        self.lambda_dssim = 0.2
+        self.percent_dense = 0.01
         self.densification_interval = 100
         self.opacity_reset_interval = 3000
         self.densify_from_iter = 500

@@ -175,17 +175,19 @@ class Instrument(object):
         num_pts_per_triangle (int): The number of points to sample per triangle.
         """
         for part_name, part in self.part_dict.items():
+            # In the stage I (geometry pretraining), we used ray tracing to get better surface points.
             surf_point_file =  os.path.join(ply_root, f'{part_name}_ray_tracing.npz')
             # part.create_meshpoint_cloud(num_pts_per_triangle,  os.path.join(ply_root, f'{part_name}_points3d.ply'))
-            # continue
+            
             if os.path.exists(surf_point_file):
                 npz = np.load(surf_point_file)
                 surf_face_idxes = torch.from_numpy(npz['surf_face_idxes'])
                 surf_alphas = torch.from_numpy(npz['surf_alpha'])
                 surf_vertices = torch.from_numpy(npz['surf_vertices'])
-                
                 part.create_meshpoint_cloud_with_ray_tracing(surf_face_idxes, surf_alphas, surf_vertices,  os.path.join(ply_root, f'{part_name}_points3d.ply'))
             else:
+                # use mesh surface points only to initialize the mesh point cloud. Due to inferior quality, this is not used in our final experiments.
+                raise NotImplementedError(f"In this work we didn't use Mesh to initialize GS. Creating meshpoint cloud requires num_pts_per_triangle to be specified!")
                 part.create_meshpoint_cloud(num_pts_per_triangle,  os.path.join(ply_root, f'{part_name}_points3d.ply'))
 
     def training_setup(self, opt):
@@ -212,6 +214,7 @@ class Instrument(object):
         return torch.cat(points, dim=0) 
     
     def get_keypoints(self):
+        # return the keypoints under canonical space w.r.t. the part coordinate frames
         keypoints = []
         keypoints.append(self.part_dict['shaft'].keypoints)#render_params['keypoints'])
         keypoints.append(self.part_dict['wrist'].keypoints)#render_params['keypoints'])
@@ -293,11 +296,17 @@ class Instrument(object):
         semantics = []
         if not(hasattr(self, 'l_gripper_semantic_mask') and hasattr(self, 'r_gripper_semantic_mask')):
             xyz = self.part_dict['l_gripper'].gaussian_model.get_xyz
-            length = self.part_dict['l_gripper'].gaussian_model.vertices[...,0].max() - self.part_dict['l_gripper'].gaussian_model.vertices[...,0].min()
-            self.l_gripper_semantic_mask = xyz[..., 0] < self.part_dict['l_gripper'].gaussian_model.vertices[...,0].min() + 0.46 * length
+            if self.part_dict['l_gripper'].gaussian_model.vertices is None:
+                length = self.part_dict['l_gripper'].gaussian_model.get_xyz[...,0].max().detach() - self.part_dict['l_gripper'].gaussian_model.get_xyz[...,0].min().detach()
+                self.l_gripper_semantic_mask = xyz[..., 0] < self.part_dict['l_gripper'].gaussian_model.get_xyz[...,0].min().detach() + 0.46 * length
+                xyz = self.part_dict['r_gripper'].gaussian_model.get_xyz
+                self.r_gripper_semantic_mask = xyz[..., 0] < self.part_dict['r_gripper'].gaussian_model.get_xyz[...,0].min().detach() + 0.46 * length
+            else:
+                length = self.part_dict['l_gripper'].gaussian_model.vertices[...,0].max() - self.part_dict['l_gripper'].gaussian_model.vertices[...,0].min()
+                self.l_gripper_semantic_mask = xyz[..., 0] < self.part_dict['l_gripper'].gaussian_model.vertices[...,0].min() + 0.46 * length
             
-            xyz = self.part_dict['r_gripper'].gaussian_model.get_xyz
-            self.r_gripper_semantic_mask = xyz[..., 0] < self.part_dict['r_gripper'].gaussian_model.vertices[...,0].min() + 0.46 * length
+                xyz = self.part_dict['r_gripper'].gaussian_model.get_xyz
+                self.r_gripper_semantic_mask = xyz[..., 0] < self.part_dict['r_gripper'].gaussian_model.vertices[...,0].min() + 0.46 * length
 
         for i,(part_name, part) in enumerate(self.part_dict.items()):
              # if i > 0: continue
