@@ -14,9 +14,12 @@ Official code implementation for [Instrument-Splatting](https://arxiv.org/abs/25
 
 https://github.com/user-attachments/assets/c5a1e684-b998-489b-960c-9d7717bfd65b
 
+### Complete pipeline
+
+[Watch the TMI demo video](media/TMI_demo.mp4)
+
 ## TODO
 
-- Add a video demo of the complete Instrument-Splatting++ pipeline.
 - Add a complete `data_processing/` folder for preparing custom datasets. This folder will include a separate README with:
   - a download link for the processed RARP dataset;
   - a download link for the processed in-house dataset.
