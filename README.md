@@ -1,12 +1,16 @@
 # Instrument-Splatting++
 
-Official code implementation for [Instrument-Splatting](https://arxiv.org/abs/2503.04082), a Real2Sim framework for controllable and photorealistic surgical instrument reconstruction.
+Official code implementation for [Instrument-Splatting++](https://arxiv.org/abs/2603.22792), an extension of Instrument-Splatting for controllable surgical instrument digital twins.
 
 <!--### [Project Page]() -->
 
 > [Instrument-Splatting: Controllable Photorealistic Reconstruction of Surgical Instruments Using Gaussian Splatting](https://papers.miccai.org/miccai-2025/0453-Paper3069.html)\
 > Shuojue Yang*, Zijian Wu*, Mingxuan Hong, Qian Li, Daiyun Shen, Septimiu E. Salcudean, Yueming Jin\
-> Accept at MICCAI2025
+> MICCAI 2025
+
+> [Instrument-Splatting++: Towards Controllable Surgical Instrument Digital Twin Using Gaussian Splatting](https://arxiv.org/abs/2603.22792)\
+> Shuojue Yang, Zijian Wu, Chengjiaao Liao, Qian Li, Daiyun Shen, Chang Han Low, Septimiu E. Salcudean, Yueming Jin\
+> arXiv:2603.22792, 2026
 
 ## Demo
 
@@ -132,7 +136,7 @@ Results are written to `Results/<exp_name>/inference_ttpr/` or `Results/<exp_nam
 
 If you find this code useful for your research, please use the following BibTeX entries:
 
-```
+```bibtex
 @InProceedings{Yang_InstrumentSplatting_MICCAI2025,
         author = { Yang, Shuojue AND Wu, Zijian AND Hong, Mingxuan AND Li, Qian AND Shen, Daiyun AND Salcudean, Septimiu E. AND Jin, Yueming},
         title = { { Instrument-Splatting: Controllable Photorealistic Reconstruction of Surgical Instruments Using Gaussian Splatting } },
@@ -144,6 +148,15 @@ If you find this code useful for your research, please use the following BibTeX 
         page = {301 -- 311}
 }
 
+@misc{yang2026instrumentsplattingcontrollablesurgicalinstrument,
+        title = {Instrument-Splatting++: Towards Controllable Surgical Instrument Digital Twin Using Gaussian Splatting},
+        author = {Shuojue Yang and Zijian Wu and Chengjiaao Liao and Qian Li and Daiyun Shen and Chang Han Low and Septimiu E. Salcudean and Yueming Jin},
+        year = {2026},
+        eprint = {2603.22792},
+        archivePrefix = {arXiv},
+        primaryClass = {cs.RO},
+        url = {https://arxiv.org/abs/2603.22792}
+}
 ```
 
 ### Questions
