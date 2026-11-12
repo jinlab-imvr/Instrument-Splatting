@@ -74,37 +74,63 @@ data
 ```
 ## Training
 
-To train Instrument-Splatting with customized hyper-parameters, please make changes in `arguments/__init__.py`
+Training consists of two stages: pose tracking followed by reconstruction texture learning (RTL). Use the same experiment name and pretrained GS option for both stages.
 
-### Pretrained GS model
-We have uploaded our pretrained GS models to `pretrained_models`. Now we have released two options: `pretrain_3dgs_dense_param` and `pretrain_param_3dgs` with various gaussian numbers. Please choose per your `arguments/__init__.py`.
+### Pretrained GS Models
 
-### Pose Tracking & Estimation
-To estimate per-frame instrument poses, run the following example command:
+The required initialized GS models are included in `pretrained_models/`. Two variants are available: `pretrain_param_3dgs` and `pretrain_3dgs_dense_param`. Select one with `--pretrain_params`.
 
+### 1. Pose Tracking and Estimation
+
+Estimate the per-frame instrument poses:
+
+```bash
+python pose_tracking_tipNet.py \
+    --source_path data/surgpose_sample \
+    --task_name exp1 \
+    --pretrain_params pretrain_3dgs_dense_param
 ```
-python pose_tracking_tipNet.py --source_path data/surgpose_sample --task_name exp1
+
+This stage writes the tracked poses to `Results/exp1/memory_pool.pth` and saves tracking visualizations under `Results/exp1/tracking_visualization/`. Use `--tracking_iterations` to change the number of optimization steps per frame and `--max_frames` for a short run.
+
+### 2. Reconstruction Texture Learning
+
+Run RTL with the tracking result from the first stage:
+
+```bash
+python texture_learning.py \
+    --source_path data/surgpose_sample \
+    --task_name exp1 \
+    --pretrain_params pretrain_3dgs_dense_param
 ```
 
-### Texture Learning
-To learn the instrument appearances, run the following example command:
-```
-python texture_learning.py --source_path data/surgpose_sample --task_name exp1
-```
+By default, this command reads `Results/exp1/memory_pool.pth`. It uses the frames listed in `training_iterations.txt`; when that file is empty, it uses all tracked frames not listed in `testing_iterations.txt`. The four trained instrument-part models and the updated `memory_pool.pth` are saved in `Results/exp1/`. Use `--texture_learning_iterations` to change the number of RTL steps, or `--memory_pool <path>` to load a tracking result from another location.
 
-## Evaluation
+## Inference and Evaluation
 
-To obtain the final image quality estimation, run:
+Inference loads the trained part models and `memory_pool.pth` from `Results/<exp_name>/`, then evaluates the frames listed in `testing_iterations.txt`.
 
-```
+```bash
 # TTPR is enabled by default
 python infer.py --source_path data/surgpose_sample --exp_name exp1
+
+# Use a custom number of TTPR steps
+python infer.py --source_path data/surgpose_sample --exp_name exp1 --ttpr_steps 100
 
 # Disable test-time pose refinement
 python infer.py --source_path data/surgpose_sample --exp_name exp1 --no-ttpr
 ```
 
-The default TTPR setting performs 200 pose-refinement steps per test frame. Use `--ttpr_steps` to change this value. Results are written to `Results/<exp_name>/inference_ttpr/` or `Results/<exp_name>/inference_no_ttpr/`.
+TTPR performs 200 pose-refinement steps per test frame by default. Use `--max_test_frames <N>` for a short inference run.
+
+Results are written to `Results/<exp_name>/inference_ttpr/` or `Results/<exp_name>/inference_no_ttpr/` and include:
+
+- `renders_rgb/`: final RGB renderings;
+- `renders_rgb_before_ttpr/`: renderings before refinement when TTPR is enabled;
+- `renders_depth/`: depth arrays and preview images;
+- `image_metrics.json`: per-frame PSNR, SSIM, and LPIPS;
+- `summary.json`: aggregate metrics;
+- `refined_pose_values.pth`: refined test poses when TTPR is enabled.
 
 ## Citation
 
