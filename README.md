@@ -2,17 +2,23 @@
 
 Official code implementation for [Instrument-Splatting](https://arxiv.org/abs/2503.04082), a Real2Sim framework for controllable and photorealistic surgical instrument reconstruction.
 
+> **Instrument-Splatting++:** The extended [paper](https://arxiv.org/abs/2603.22792) and its code are available in the [`instrument-splatting++` branch](https://github.com/jinlab-imvr/Instrument-Splatting/tree/instrument-splatting%2B%2B).
+
 <!--### [Project Page]() -->
 
 > [Instrument-Splatting: Controllable Photorealistic Reconstruction of Surgical Instruments Using Gaussian Splatting](https://papers.miccai.org/miccai-2025/0453-Paper3069.html)\
 > Shuojue Yang*, Zijian Wu*, Mingxuan Hong, Qian Li, Daiyun Shen, Septimiu E. Salcudean, Yueming Jin\
-> Accept at MICCAI2025
+> MICCAI 2025
+
+> [Instrument-Splatting++: Towards Controllable Surgical Instrument Digital Twin Using Gaussian Splatting](https://arxiv.org/abs/2603.22792)\
+> Shuojue Yang, Zijian Wu, Chengjiaao Liao, Qian Li, Daiyun Shen, Chang Han Low, Septimiu E. Salcudean, Yueming Jin\
+> arXiv:2603.22792, 2026
 
 ## Demo
 
-### Pose estimation & Reconstruction quality 
+### MIA_demo.mp4
 
-https://github.com/user-attachments/assets/c5a1e684-b998-489b-960c-9d7717bfd65b
+https://github.com/user-attachments/assets/53ac2999-31dd-43e1-b96f-ece10b5778a1
 
 ## Environment setup
 
@@ -100,7 +106,7 @@ python infer.py --source_path data/surgpose_sample --exp_name exp1
 
 If you find this code useful for your research, please use the following BibTeX entries:
 
-```
+```bibtex
 @InProceedings{Yang_InstrumentSplatting_MICCAI2025,
         author = { Yang, Shuojue AND Wu, Zijian AND Hong, Mingxuan AND Li, Qian AND Shen, Daiyun AND Salcudean, Septimiu E. AND Jin, Yueming},
         title = { { Instrument-Splatting: Controllable Photorealistic Reconstruction of Surgical Instruments Using Gaussian Splatting } },
@@ -112,6 +118,15 @@ If you find this code useful for your research, please use the following BibTeX 
         page = {301 -- 311}
 }
 
+@misc{yang2026instrumentsplattingcontrollablesurgicalinstrument,
+        title = {Instrument-Splatting++: Towards Controllable Surgical Instrument Digital Twin Using Gaussian Splatting},
+        author = {Shuojue Yang and Zijian Wu and Chengjiaao Liao and Qian Li and Daiyun Shen and Chang Han Low and Septimiu E. Salcudean and Yueming Jin},
+        year = {2026},
+        eprint = {2603.22792},
+        archivePrefix = {arXiv},
+        primaryClass = {cs.RO},
+        url = {https://arxiv.org/abs/2603.22792}
+}
 ```
 
 ### Questions
