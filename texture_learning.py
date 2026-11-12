@@ -306,6 +306,41 @@ def save_models(instrument, memory_pool, output_dir, iteration):
     torch.save(memory_pool, os.path.join(output_dir, "memory_pool.pth"))
 
 
+def load_training_frame_ids(source_path, available_frame_ids):
+    available_frame_ids = sorted(int(frame_id) for frame_id in available_frame_ids)
+    available_set = set(available_frame_ids)
+    training_path = os.path.join(source_path, "training_iterations.txt")
+    testing_path = os.path.join(source_path, "testing_iterations.txt")
+
+    training_frame_ids = []
+    if os.path.isfile(training_path):
+        with open(training_path, "r") as handle:
+            training_frame_ids = [int(line.strip()) for line in handle if line.strip()]
+
+    if not training_frame_ids:
+        testing_frame_ids = set()
+        if os.path.isfile(testing_path):
+            with open(testing_path, "r") as handle:
+                testing_frame_ids = {
+                    int(line.strip()) for line in handle if line.strip()
+                }
+        training_frame_ids = [
+            frame_id for frame_id in available_frame_ids if frame_id not in testing_frame_ids
+        ]
+
+    missing_frame_ids = sorted(set(training_frame_ids) - available_set)
+    if missing_frame_ids:
+        raise ValueError(
+            "Training frames are absent from memory_pool.pth: {}".format(
+                missing_frame_ids
+            )
+        )
+    training_frame_ids = sorted(set(training_frame_ids))
+    if not training_frame_ids:
+        raise ValueError("No training frames are available for RTL")
+    return training_frame_ids
+
+
 def training(gs_type, dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations,
              checkpoint, debug_from, save_xyz, memory_pool_path, task_name, pretrain_params):
     first_iter = 0
@@ -339,9 +374,10 @@ def training(gs_type, dataset, opt, pipe, testing_iterations, saving_iterations,
     semantic_silhouette0, depth0 = None, None
     original_geometry_dict = {}
 
-    iterations = sorted(final_memory_pool.keys())
+    iterations = load_training_frame_ids(dataset.source_path, final_memory_pool.keys())
     if not iterations:
         raise ValueError("The tracking memory pool is empty")
+    print("RTL uses {} training frames.".format(len(iterations)))
 
     psnr_dict = {}
     progress_bar = tqdm(range(opt.texture_learning_iterations + 1), desc="Texture learning")

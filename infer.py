@@ -1,129 +1,76 @@
+import json
 import os
-import torch
-from random import randint
-from utils.loss_utils import l1_loss, ssim, l1_loss_normalization
-
-from renderer.gaussian_renderer import render_with_instrument_v3 as render
 import sys
-from scene import InstrumentScene
-from utils.instrument import Instrument
-from games import (
-    optimizationParamTypeCallbacks,
-    gaussianModel
-)
-from utils.loss_utils import ssim
-import lpips
-from utils.image_utils import psnr
-from utils.camera_utils import Camera
-import torch.autograd as autograd
-import torch.nn.functional as F
-from utils.general_utils import safe_state
-import uuid
-from tqdm import tqdm
-from utils.image_utils import psnr, load_viewcam_from_npz
-from utils.graphics_utils import build_rotation, matrix_to_quaternion, rotation_matrix_to_angle_axis
-from argparse import ArgumentParser, Namespace
-from arguments import ModelParams, PipelineParams
-from torchvision.utils import save_image
-import numpy as np
-import random
-try:
-    from torch.utils.tensorboard import SummaryWriter
-
-    TENSORBOARD_FOUND = True
-except ImportError:
-    TENSORBOARD_FOUND = False
+from argparse import ArgumentParser
 
 import cv2
-from collections import deque
-from scipy.ndimage import label
-from utils.loss_utils import dice as Dice
-import json
+import lpips
+import numpy as np
+import torch
+import torch.nn.functional as F
+from torchvision.utils import save_image
+
+from arguments import ModelParams, PipelineParams
+from games import gaussianModel
+from renderer.gaussian_renderer import render_with_instrument_v3 as render
+from scene import InstrumentScene
+from utils.general_utils import safe_state
+from utils.graphics_utils import build_rotation, matrix_to_quaternion
+from utils.image_utils import psnr
+from utils.loss_utils import l1_loss, ssim
 
 
 REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 
-remove_list = []
-
-def proj_2d(K, xyz):
-    """
-    Project 3D points to 2D points using camera intrinsic matrix K. And draw the 2D points in the 2D frame
-    """
-    # Project the points
-    xyz = xyz/xyz[:, 2].unsqueeze(1)
-    xyz = torch.matmul(K.float(), xyz.t()).t()
-    # Normalize the points
-    xyz = xyz[:, :2] 
-    
-    # Convert to numpy
-    points_2d = xyz.cpu().numpy().astype(int)
-    
-    # Create a blank image
-    image = torch.zeros((512, 640, 3), dtype=torch.uint8).cpu().numpy()
-    
-    # Draw points on the image
-    for point in points_2d:
-        cv2.circle(image, (point[0], point[1]), radius=3, color=(0, 255, 0), thickness=-1)
-    
-    # Save or display the image
-    cv2.imwrite('projected_points.png', image)
-    # cv2.imshow('Projected Points', image)
-    # cv2.waitKey(0)
-    # cv2.destroyAllWindows()
-
-
 class Pose(object):
-    def activate_alpha(self, alpha):
-        # Scale alpha to range from -90 to 90 degrees
-        return torch.pi * torch.sigmoid(alpha) - torch.pi / 2
-
-    def activate_theta(self, theta):
-        # Scale theta to range from -80 to 80 degrees
-        return (160.0 / 180.0) * torch.pi * torch.sigmoid(theta) - (80.0 / 180.0) * torch.pi
-
-    def __init__(self, rot, trans, alpha, theta_l, theta_r, init_optimizer = True):
-        quat = matrix_to_quaternion(rot)
-        quat = F.normalize(quat, p=2, dim=0)
-        if init_optimizer:
-            self.rot = torch.nn.Parameter(quat, requires_grad=True)
-            self.trans = torch.nn.Parameter(trans, requires_grad=True)
-            self.alpha = torch.nn.Parameter(alpha, requires_grad=True)
-            self.theta_l = torch.nn.Parameter(theta_l, requires_grad=True)
-            self.theta_r = torch.nn.Parameter(theta_r, requires_grad=True)
-            self.optimizer = torch.optim.Adam([
-                {'params': [self.rot], 'lr': 0.001, 'name': 'rot'},
-                {'params': [self.trans], 'lr': 0.0001, 'name': 'trans'},
-                {'params': [self.alpha], 'lr': 0.005, 'name': 'alpha'},
-                {'params': [self.theta_l], 'lr': 0.01, 'name': 'theta_l'},
-                {'params': [self.theta_r], 'lr': 0.01, 'name': 'theta_r'}
-            ], lr=0.0, eps=1e-15)
+    def __init__(self, rot, trans, alpha, theta_l, theta_r, init_optimizer=True):
+        if rot.dim() == 1 and rot.numel() == 4:
+            quaternion = rot
         else:
-            self.rot = quat.detach().clone()
+            quaternion = matrix_to_quaternion(rot)
+        quaternion = F.normalize(quaternion, p=2, dim=0)
+
+        if init_optimizer:
+            self.rot = torch.nn.Parameter(quaternion.detach().clone(), requires_grad=True)
+            self.trans = torch.nn.Parameter(trans.detach().clone(), requires_grad=True)
+            self.alpha = torch.nn.Parameter(alpha.detach().clone(), requires_grad=True)
+            self.theta_l = torch.nn.Parameter(theta_l.detach().clone(), requires_grad=True)
+            self.theta_r = torch.nn.Parameter(theta_r.detach().clone(), requires_grad=True)
+            self.optimizer = torch.optim.Adam(
+                [
+                    {"params": [self.rot], "lr": 0.001, "name": "rot"},
+                    {"params": [self.trans], "lr": 0.0001, "name": "trans"},
+                    {"params": [self.alpha], "lr": 0.005, "name": "alpha"},
+                    {"params": [self.theta_l], "lr": 0.01, "name": "theta_l"},
+                    {"params": [self.theta_r], "lr": 0.01, "name": "theta_r"},
+                ],
+                lr=0.0,
+                eps=1e-15,
+            )
+        else:
+            self.rot = quaternion.detach().clone()
             self.trans = trans.detach().clone()
             self.alpha = alpha.detach().clone()
             self.theta_l = theta_l.detach().clone()
             self.theta_r = theta_r.detach().clone()
 
-
     def get_pose(self):
-        rotation_matrix = build_rotation(self.rot)
-        return rotation_matrix[0], self.trans, self.alpha, self.theta_l, self.theta_r
+        return (
+            build_rotation(self.rot)[0],
+            self.trans,
+            self.alpha,
+            self.theta_l,
+            self.theta_r,
+        )
 
-    def step_optimizer(self):
-        self.optimizer.step()
 
-    def zero_grad(self):
-        self.optimizer.zero_grad(set_to_none=True)
-def array2tensor(array, device="cuda", dtype=torch.float32):
-    return torch.tensor(array, dtype=dtype, device=device)
 class LPIPS(object):
-    """
-    borrowed from https://github.com/huster-wgm/Pytorch-metrics/blob/master/metrics.py
-    """
     def __init__(self, device="cuda"):
         linear_weights = os.path.join(REPO_ROOT, "checkpoints", "lpips_alex_v0.1.pth")
-        backbone_weights = os.path.join(REPO_ROOT, "checkpoints", "alexnet-owt-7be5be79.pth")
+        backbone_weights = os.path.join(
+            REPO_ROOT, "checkpoints", "alexnet-owt-7be5be79.pth"
+        )
         self.model = lpips.LPIPS(
             net="alex",
             pnet_rand=True,
@@ -136,344 +83,301 @@ class LPIPS(object):
         for feature_index, slice_index in feature_to_slice.items():
             for parameter_name in ("weight", "bias"):
                 source_key = "features.{}.{}".format(feature_index, parameter_name)
-                target_key = "slice{}.{}.{}".format(slice_index, feature_index, parameter_name)
+                target_key = "slice{}.{}.{}".format(
+                    slice_index, feature_index, parameter_name
+                )
                 mapped_state[target_key] = alexnet_state[source_key]
         self.model.net.load_state_dict(mapped_state, strict=True)
-        self.model = self.model.to(device)
+        self.model = self.model.to(device).eval()
+        for parameter in self.model.parameters():
+            parameter.requires_grad_(False)
 
-    def __call__(self, y_pred, y_true, normalized=True):
-        """
-        args:
-            y_true : 4-d ndarray in [batch_size, channels, img_rows, img_cols]
-            y_pred : 4-d ndarray in [batch_size, channels, img_rows, img_cols]
-            normalized : change [0,1] => [-1,1] (default by LPIPS)
-        return LPIPS, smaller the better
-        """
-        if normalized:
-            y_pred = y_pred * 2.0 - 1.0
-            y_true = y_true * 2.0 - 1.0
-        error =  self.model.forward(y_pred, y_true)
-        return torch.mean(error)
-    
-_lpips_metric = None
+    def __call__(self, prediction, target):
+        prediction = prediction * 2.0 - 1.0
+        target = target * 2.0 - 1.0
+        return self.model(prediction, target).mean()
 
 
-def cal_lpips(a, b, device="cuda", batch=2):
-    """Compute lpips.
-    a, b: [batch, H, W, 3]"""
-    global _lpips_metric
-    if _lpips_metric is None:
-        _lpips_metric = LPIPS(device=device)
-    if not torch.is_tensor(a):
-        a = array2tensor(a, device)
-    if not torch.is_tensor(b):
-        b = array2tensor(b, device)
-
-    lpips_all = []
-    for a_split, b_split in zip(a.split(split_size=batch, dim=0), b.split(split_size=batch, dim=0)):
-        out = _lpips_metric(a_split, b_split)
-        lpips_all.append(out)
-    lpips_all = torch.stack(lpips_all)
-    lpips_mean = lpips_all.mean()
-    return lpips_mean
-
-def rotation_matrix_x(angle_degrees):
-    angle_radians = np.radians(angle_degrees)
-    cos_angle = np.cos(angle_radians)
-    sin_angle = np.sin(angle_radians)
-    rotation_matrix = np.array([
-        [1, 0, 0],
-        [0, cos_angle, -sin_angle],
-        [0, sin_angle, cos_angle]
-    ])
-    return torch.tensor(rotation_matrix, dtype=torch.float32).cuda()
-def rotation_matrix_z(angle_degrees):
-    angle_radians = np.radians(angle_degrees)
-    cos_angle = np.cos(angle_radians)
-    sin_angle = np.sin(angle_radians)
-    rotation_matrix = np.array([
-        [cos_angle, -sin_angle, 0],
-        [sin_angle, cos_angle, 0],
-        [0, 0, 1]
-    ])
-    return torch.tensor(rotation_matrix, dtype=torch.float32).cuda()
+def clone_pose_values(values):
+    return tuple(value.detach().clone() for value in values)
 
 
-def infering(gs_type, dataset, opt, pipe, exp_name):
-    first_iter = 0
-    assert exp_name is not None, "Please provide a path to save the experiment results."
-    exp_path = os.path.join(dataset.exp_dir, exp_name)
-    memory_pool_path = os.path.join(exp_path, 'memory_pool.pth')
-    memory_pool = torch.load(memory_pool_path)
+def load_test_frames(source_path):
+    split_path = os.path.join(source_path, "testing_iterations.txt")
+    if not os.path.isfile(split_path):
+        raise FileNotFoundError("Missing test split: {}".format(split_path))
+    with open(split_path, "r") as handle:
+        frame_ids = [int(line.strip()) for line in handle if line.strip()]
+    if not frame_ids:
+        raise ValueError("The test split is empty: {}".format(split_path))
+    return frame_ids
 
-    scene = InstrumentScene(dataset, gaussianModel[gs_type], dataset.sh_degree,
-                             pretrain_path = exp_path, pretrain_params='trained_3dgs_param')
+
+def white_background_ground_truth(camera):
+    image = camera.original_image.cuda().clone()
+    semantic = camera.original_semantic_mask.cuda().permute(2, 0, 1)
+    foreground = semantic.sum(dim=0, keepdim=True) > 0
+    result = torch.ones_like(image)
+    result[foreground.repeat(3, 1, 1)] = image[foreground.repeat(3, 1, 1)]
+    return result
+
+
+def render_pose(instrument, values, camera, pipe, background, pose_grad):
+    rot, trans, alpha, theta_l, theta_r = values
+    instrument.forward_kinematics(
+        rot,
+        trans,
+        alpha,
+        theta_l,
+        theta_r,
+        gs_grad=False,
+        pose_grad=pose_grad,
+    )
+    package = render(
+        camera,
+        instrument,
+        pipe,
+        background,
+        override_camera_center=trans.to(rot.dtype) * 1000.0,
+        active_sh_degree=None,
+        render_semantics_silhouette=False,
+    )
+    return package["render"].permute(2, 0, 1), package["depth"]
+
+
+def refine_pose(instrument, initial_values, camera, pipe, background, target, steps):
+    pose = Pose(*initial_values)
+    best_values = clone_pose_values(initial_values)
+    with torch.no_grad():
+        initial_image, _ = render_pose(
+            instrument, best_values, camera, pipe, background, pose_grad=False
+        )
+        best_psnr = float(psnr(initial_image[None], target[None]).mean())
+    best_step = 0
+
+    for step in range(1, steps + 1):
+        pose.optimizer.zero_grad(set_to_none=True)
+        image, _ = render_pose(
+            instrument, pose.get_pose(), camera, pipe, background, pose_grad=True
+        )
+        loss = l1_loss(image, target)
+        if not torch.isfinite(loss):
+            raise RuntimeError("Non-finite TTPR loss at step {}".format(step))
+
+        candidate_psnr = float(psnr(image.detach()[None], target[None]).mean())
+        if candidate_psnr > best_psnr:
+            best_psnr = candidate_psnr
+            best_step = step - 1
+            best_values = clone_pose_values(pose.get_pose())
+
+        loss.backward()
+        pose.optimizer.step()
+
+    return best_values, best_step
+
+
+def evaluate_image(image, target, perceptual):
+    with torch.no_grad():
+        return {
+            "SSIM": float(ssim(image[None], target[None])),
+            "PSNR": float(psnr(image[None], target[None]).mean()),
+            "LPIPS": float(perceptual(image[None], target[None])),
+        }
+
+
+def save_depth(depth, output_path):
+    depth_array = depth.detach().cpu().numpy().astype(np.float32)
+    np.save(output_path + ".npy", depth_array)
+    finite = np.isfinite(depth_array)
+    preview = np.zeros_like(depth_array, dtype=np.uint8)
+    if finite.any():
+        valid = depth_array[finite]
+        low, high = np.percentile(valid, [1.0, 99.0])
+        if high > low:
+            scaled = np.clip((depth_array - low) / (high - low), 0.0, 1.0)
+            preview = np.round(scaled * 255.0).astype(np.uint8)
+    cv2.imwrite(output_path + ".png", preview)
+
+
+def infer(dataset, pipe, gs_type, exp_name, use_ttpr, ttpr_steps, max_test_frames):
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is required for inference")
+
+    experiment_path = os.path.join(dataset.exp_dir, exp_name)
+    memory_pool_path = os.path.join(experiment_path, "memory_pool.pth")
+    if not os.path.isfile(memory_pool_path):
+        raise FileNotFoundError("Missing tracking memory pool: {}".format(memory_pool_path))
+
+    memory_pool = {int(key): value for key, value in torch.load(memory_pool_path).items()}
+    scene = InstrumentScene(
+        dataset,
+        gaussianModel[gs_type],
+        dataset.sh_degree,
+        pretrain_path=experiment_path,
+        pretrain_params="trained_3dgs_param",
+    )
     instrument = scene.instrument
-    instrument.training_setup(opt)
+    cameras = scene.getTrainCameras()
+    test_frames = load_test_frames(scene.source_path)
+    if max_test_frames is not None:
+        test_frames = test_frames[:max_test_frames]
 
-    white_background = True
-    bg_color = [1, 1, 1] if white_background else [0, 0, 0]
-    background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+    missing_pool = sorted(set(test_frames) - set(memory_pool))
+    missing_cameras = sorted(frame_id for frame_id in test_frames if frame_id >= len(cameras))
+    if missing_pool:
+        raise RuntimeError("Test frames absent from memory_pool.pth: {}".format(missing_pool))
+    if missing_cameras:
+        raise RuntimeError("Test frames absent from the camera list: {}".format(missing_cameras))
 
+    mode = "ttpr" if use_ttpr else "no_ttpr"
+    output_path = os.path.join(experiment_path, "inference_{}".format(mode))
+    render_path = os.path.join(output_path, "renders_rgb")
+    initial_render_path = os.path.join(output_path, "renders_rgb_before_ttpr")
+    depth_path = os.path.join(output_path, "renders_depth")
+    os.makedirs(render_path, exist_ok=True)
+    os.makedirs(depth_path, exist_ok=True)
+    if use_ttpr:
+        os.makedirs(initial_render_path, exist_ok=True)
 
-    viewpoint_stack = None
-    first_iter += 1
-
-    if not viewpoint_stack:
-        viewpoint_stack = scene.getTrainCameras()
-    viewpoint_cam = viewpoint_stack[0]
-    # viewpoint_stack = viewpoint_stack[:25]
-    rot = torch.from_numpy(viewpoint_cam.R).cuda()
-    trans = torch.from_numpy(viewpoint_cam.T + 0.000).cuda()
-    alpha = torch.tensor([0.0], dtype=torch.float32, device="cuda")
-    theta_l = torch.tensor([15. / 180. * torch.pi], dtype=torch.float32, device="cuda")
-    theta_r = torch.tensor([15. / 180. * torch.pi], dtype=torch.float32, device="cuda")
-    pose = Pose(rot, trans, alpha, theta_l, theta_r)
-
-    # online mode to run the render and compare (global iterations) 
-    # memory_pool = {}
-    rot0, trans0, alpha0, theta_l0, theta_r0 = rot.detach().clone(), trans.detach().clone(), alpha.detach().clone(), theta_l.detach().clone(), theta_r.detach().clone()
-    # perform tracking
-    
-    assert os.path.exists(f"{scene.source_path}/testing_iterations.txt")
-
-    with open(f"{scene.source_path}/testing_iterations.txt", "r") as f:
-            testing_iterations = [int(line.strip()) for line in f]
-
-    render_rgb_path = os.path.join(exp_path, 'renders_rgb')
-    render_semantics_path = os.path.join(exp_path, 'renders_semantics')
-    render_depth_path = os.path.join(exp_path, 'renders_depth')
-    keypoint_map_path = os.path.join(exp_path, 'keypoint_maps')
-    os.makedirs(render_rgb_path, exist_ok=True)
-    os.makedirs(render_semantics_path, exist_ok=True)
-    os.makedirs(render_depth_path, exist_ok=True)
-    os.makedirs(keypoint_map_path, exist_ok=True)
-
-
-    ssims = []
-    psnrs = []
-    lpipss = []
-    rmses = []
-    evaluated_iterations = []
-    # Training
-    for i, iteration in enumerate(list(memory_pool.keys())):
-        if iteration  not in testing_iterations:
-            continue
-        evaluated_iterations.append(iteration)
-    # Testing
-    # for i, iteration in enumerate(testing_iterations):
-        # Every 1000 its we increase the levels of SH up to a maximum degree
-        viewpoint_cam = viewpoint_stack[iteration]
-        image_name = viewpoint_cam.image_name
-        gt_semantic_map = viewpoint_cam.original_semantic_mask.cuda()
-        gt_image = viewpoint_cam.original_image.cuda()
-        gt_semantic_map = gt_semantic_map.permute(2, 0, 1)
-        
-
-        pose_info, dice = memory_pool[iteration]['pose_info'], memory_pool[iteration]['dice']
-        wrist_dice, shaft_dice, gripper_dice = dice  
-        testing = False if iteration not in testing_iterations else True
-
-        joint_state = pose_info.get_pose()
-        pose = Pose(*joint_state)
-        per_view_dict = {}
-        with torch.no_grad():
-            rot, trans, alpha, theta_l, theta_r = pose_info.get_pose()
-            instrument.forward_kinematics(rot, trans, alpha, theta_l, theta_r, gs_grad=True, pose_grad = False)
-            
-            transformation = torch.eye(4, device="cuda")
-            transformation[:3, :3] = rot
-            transformation[:3, 3] = trans 
-            override_camera_center = transformation[:3, 3] * 1000
-            bg = torch.rand((3), device="cuda") if opt.random_background else background
-            render_pkg = render(viewpoint_cam, instrument, pipe, bg, 
-                    override_camera_center=override_camera_center, render_semantics_silhouette=False)
-            image, opacity, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["opacity"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-            image = image.permute(2, 0, 1)
-            depth = render_pkg["depth"]
-            opacity = opacity
-            opacity_mask = opacity < 0.5
-            image[:,opacity_mask] = 1
-            mask = gt_semantic_map.sum(dim=0)>0
-            gt_shaft_mask = gt_semantic_map[0] > 0.5
-            # dilate the shaft mask
-            # gt_shaft_mask = F.max_pool2d(gt_shaft_mask[None, None].float(), 3, stride=1, padding=1)[0, 0] > 0.5
-            # gt_image[:,gt_shaft_mask ==0] = 1
-            # image[:, gt_shaft_mask == 0] = 1
-            # gt_image[:,mask == 0] = 1
-
-            # gt_image[..., -35:,:] = 1
-            psnrs.append(psnr(image[None], gt_image[None]))
-            ssims.append(ssim(image[None], gt_image[None]))
-            lpipss.append(cal_lpips(image[None], gt_image[None]))
-            # rmses.append(rmse(depth, gt_depth, mask))
-        
-        # per_view_dict[task_name].update({"SSIM": {name: ssim for ssim, name in zip(torch.tensor(ssims).tolist(), image_names)},
-        #                                                     "PSNR": {name: psnr for psnr, name in zip(torch.tensor(psnrs).tolist(), image_names)},
-        #                                                     "LPIPS": {name: lp for lp, name in zip(torch.tensor(lpipss).tolist(), image_names)},
-        #                                                     "RMSES": {name: lp for lp, name in zip(torch.tensor(rmses).tolist(), image_names)}})]
-
-            
-            # save_image(semantic_silhouette, f"semantics_{task_name}/{i:05d}.png")
-            # # Save the rendered image
-            
-            save_image(image, render_rgb_path + f"/{iteration:05d}.png")
-
-            # # Save the depth map
-            depth = np.clip(depth.cpu().squeeze().numpy().astype(np.uint8), 0, 255)
-            cv2.imwrite(render_depth_path + f"/{iteration:05d}.png", depth)
-
-            # Project keypoints to 2D rendered RGB images and save the keypoint map
-            # Collect keypoints from instrument parts (after forward_kinematics they are in view/camera space)
-            part_keypoints = {}
-            # instrument.forward_kinematics(rot @ rotation_matrix_x(180), trans, -alpha, theta_r, theta_l)
-            for part_name, part in instrument.part_dict.items():
-                kp = part.render_params.get("keypoints", None)
-                if kp is None:
-                    continue
-                kp_np = kp.detach().cpu().numpy().reshape(-1, 3)
-                part_keypoints[part_name] = kp_np
-
-            # Prepare intrinsics
-            K = viewpoint_cam.K
-            if isinstance(K, torch.Tensor):
-                K = K.detach().cpu().numpy()
-            K = np.array(K).reshape(3, 3)
-
-            # Image size (image is tensor [3, H, W])
-            H, W = image.shape[1], image.shape[2]
-
-            # Colors in BGR for cv2
-            color_map = {
-                "shaft": (255, 0, 0),
-                "wrist": (0, 255, 0),
-                "l_gripper": (0, 0, 255),
-                "r_gripper": (0, 255, 255)
-            }
-
-            # Create blank keypoint map and overlay on rendered RGB
-          
-            # Convert rendered image to uint8 BGR for overlay
-            try:
-                rendered_rgb = (image.cpu().numpy().transpose(1, 2, 0) * 255.0).astype(np.uint8)
-            except Exception:
-                rendered_rgb = np.ones((H, W, 3), dtype=np.uint8) * 255
-
-            overlay = rendered_rgb.copy()
-
-            def project_pts(pts3):
-                # pts3: (N,3)
-                homog = (K @ pts3.T).T  # (N,3)
-                z = homog[:, 2:3].copy()
-                # avoid divide by zero
-                z[z == 0] = 1e-6
-                uv = homog[:, :2] / z
-                return uv
-
-            # # Draw keypoints
-            # for part_name, pts3 in part_keypoints.items():
-            #     if part_name == 'wrist':
-            #         # draw the first and last keypoints
-            #         pts3 = pts3[[0, 5], :]
-            #     uv = project_pts(pts3)
-            #     color = color_map.get(part_name, (0, 128, 255))
-            #     for p in uv:
-            #         x, y = int(round(p[0])), int(round(p[1]))
-            #         if 0 <= x < W and 0 <= y < H:
-            #             cv2.circle(overlay, (x, y), radius=3, color=color, thickness=-1)
-            #             # optional small border for visibility
-            #             # cv2.circle(overlay, (x, y), radius=6, color=(0, 0, 0), thickness=1)
-
-            # Save keypoint map and overlay
-            # os.makedirs(keypoint_map_path, exist_ok=True)
-
-            # overlay_file = os.path.join(keypoint_map_path, f"{iteration:05d}.png")
-
-            # cv2.imwrite(overlay_file, overlay)
-            # with torch.no_grad():
-            #     novel_view_folder = 'Results/' + task_name + f"/text_novel_views"
-            #     if not os.path.exists(novel_view_folder):
-            #         os.makedirs(novel_view_folder)
-            #     for k,novel_rot_angle in enumerate([-40, -30, -20, -10, 10, 20, 30, 40]):
-                    
-            #         rot_novel = rot.clone() @ rotation_matrix_x(novel_rot_angle)
-            #         transformation = torch.eye(4, device="cuda")
-            #         transformation[:3, :3] = rot_novel
-            #         transformation[:3, 3] = trans 
-            #         override_camera_center = transformation[:3, 3] * 1000
-            #         novel_rot_angle = torch.tensor(novel_rot_angle , dtype=torch.float32, device="cuda")
-            #         rot_novel = instrument.calculate_lateral_rotation(novel_rot_angle/180.*torch.pi, rot, trans, alpha)
-            #         instrument.forward_kinematics(rot_novel, trans.clone(), alpha.clone(), theta_l.clone(), theta_r.clone(), gs_grad=False, pose_grad = False, with_mesh=True)
-            #         render_img, depth = instrument.render_trimesh(viewpoint_cam.K)
-            #         render_pkg2 = render(viewpoint_cam, instrument, pipe, bg, 
-            #                         override_camera_center=override_camera_center,active_sh_degree= 0, render_semantics_silhouette=False)
-            #         semantic_silhouette = render_pkg2["render"].permute(2, 0, 1)
-            #         save_image(semantic_silhouette, novel_view_folder + '/' + f'{iteration}_novel_view{int(novel_rot_angle)}_nosh.png')
-            #         render_pkg2 = render(viewpoint_cam, instrument, pipe, bg, 
-            #                         override_camera_center=override_camera_center,active_sh_degree= None, render_semantics_silhouette=False)
-            #         semantic_silhouette = render_pkg2["render"].permute(2, 0, 1)
-            #         save_image(semantic_silhouette, novel_view_folder + '/' + f'{iteration}_novel_view{int(novel_rot_angle)}.png')
-    print("SSIM : {:>12.7f}".format(torch.tensor(ssims).mean(), ".5"))
-    print("PSNR : {:>12.7f}".format(torch.tensor(psnrs).mean(), ".5"))
-    print("LPIPS: {:>12.7f}".format(torch.tensor(lpipss).mean(), ".5"))
-
-    # Generate per-image metrics dictionary and save as JSON
+    background = torch.ones((3,), dtype=torch.float32, device="cuda")
+    perceptual = LPIPS(device="cuda")
     metrics = {}
-    def to_number(x):
-        if torch.is_tensor(x):
-            return float(x.detach().cpu().item())
-        return float(x)
+    refined_poses = {}
 
-    for idx, iteration in enumerate(evaluated_iterations):
-        # try to get a human-friendly image name, fallback to iteration id
-        try:
-            image_name = viewpoint_stack[iteration].image_name
-        except Exception:
-            image_name = str(iteration)
-        ssim_val = to_number(ssims[idx]) if idx < len(ssims) else None
-        psnr_val = to_number(psnrs[idx]) if idx < len(psnrs) else None
-        lpips_val = to_number(lpipss[idx]) if idx < len(lpipss) else None
-        metrics[image_name] = {"SSIM": ssim_val, "PSNR": psnr_val, "LPIPS": lpips_val}
+    for index, frame_id in enumerate(test_frames, 1):
+        camera = cameras[frame_id]
+        target = white_background_ground_truth(camera)
+        initial_values = clone_pose_values(memory_pool[frame_id]["pose_info"].get_pose())
 
-    
-    metrics_path = os.path.join(exp_path, "image_metrics.json")
-    with open(metrics_path, "w") as f:
-        json.dump(metrics, f, indent=2)
+        with torch.no_grad():
+            initial_image, initial_depth = render_pose(
+                instrument,
+                initial_values,
+                camera,
+                pipe,
+                background,
+                pose_grad=False,
+            )
+            initial_psnr = float(psnr(initial_image[None], target[None]).mean())
 
-    print(f"Saved per-image metrics to {metrics_path}")
-            # Save the semantic silhouette
-            # save_image(semantic_silhouette, f"semantics_{task_name}/{i:05d}.png")
+        if use_ttpr:
+            final_values, best_step = refine_pose(
+                instrument,
+                initial_values,
+                camera,
+                pipe,
+                background,
+                target,
+                ttpr_steps,
+            )
+            save_image(
+                initial_image,
+                os.path.join(initial_render_path, "{:05d}.png".format(frame_id)),
+            )
+        else:
+            final_values = initial_values
+            best_step = 0
+
+        if best_step == 0:
+            image, depth = initial_image, initial_depth
+        else:
+            with torch.no_grad():
+                image, depth = render_pose(
+                    instrument,
+                    final_values,
+                    camera,
+                    pipe,
+                    background,
+                    pose_grad=False,
+                )
+        frame_metrics = evaluate_image(image, target, perceptual)
+        frame_metrics.update(
+            {
+                "frame_id": frame_id,
+                "TTPR": use_ttpr,
+                "TTPR_steps": ttpr_steps if use_ttpr else 0,
+                "best_step": best_step,
+                "initial_PSNR": initial_psnr,
+                "PSNR_gain": frame_metrics["PSNR"] - initial_psnr,
+            }
+        )
+        metrics[camera.image_name] = frame_metrics
+        refined_poses[frame_id] = tuple(value.detach().cpu() for value in final_values)
+
+        save_image(image, os.path.join(render_path, "{:05d}.png".format(frame_id)))
+        save_depth(depth, os.path.join(depth_path, "{:05d}".format(frame_id)))
+        print(
+            "[{}/{}] frame={} PSNR {:.3f} -> {:.3f} ({:+.3f}), best_step={}".format(
+                index,
+                len(test_frames),
+                frame_id,
+                initial_psnr,
+                frame_metrics["PSNR"],
+                frame_metrics["PSNR_gain"],
+                best_step,
+            ),
+            flush=True,
+        )
+
+    metric_names = ("SSIM", "PSNR", "LPIPS")
+    summary = {
+        "TTPR": use_ttpr,
+        "TTPR_steps": ttpr_steps if use_ttpr else 0,
+        "frame_count": len(metrics),
+        "evaluated_frames": test_frames,
+        "mean": {
+            name: sum(record[name] for record in metrics.values()) / len(metrics)
+            for name in metric_names
+        },
+        "mean_PSNR_gain": sum(record["PSNR_gain"] for record in metrics.values())
+        / len(metrics),
+    }
+
+    with open(os.path.join(output_path, "image_metrics.json"), "w") as handle:
+        json.dump(metrics, handle, indent=2, sort_keys=True)
+    with open(os.path.join(output_path, "summary.json"), "w") as handle:
+        json.dump(summary, handle, indent=2, sort_keys=True)
+    if use_ttpr:
+        torch.save(refined_poses, os.path.join(output_path, "refined_pose_values.pth"))
+
+    print(json.dumps(summary, indent=2, sort_keys=True))
+    print("Saved inference results to {}".format(output_path))
 
 
 if __name__ == "__main__":
-    parser = ArgumentParser(description="Training script parameters")
-    parser.add_argument('--gs_type', type=str, default="gs_mesh")
+    parser = ArgumentParser(description="Instrument-Splatting++ inference and evaluation")
+    parser.add_argument("--gs_type", type=str, default="gs_mesh")
     parser.add_argument("--num_splats", nargs="+", type=int, default=[2])
-    parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 20_000, 30_000, 60_000, 90_000])
-    parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 20_000, 30_000, 60_000, 90_000])
+    parser.add_argument("--exp_name", type=str, default="exp1")
+    parser.add_argument("--ttpr_steps", type=int, default=200)
+    parser.add_argument("--max_test_frames", type=int, default=None)
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[7_000, 20_000, 30_000, 60_000, 90_000])
-    parser.add_argument("--exp_name", type = str, default="exp1")
+    ttpr_group = parser.add_mutually_exclusive_group()
+    ttpr_group.add_argument("--ttpr", dest="ttpr", action="store_true")
+    ttpr_group.add_argument(
+        "--no-ttpr", "--no_ttpr", dest="ttpr", action="store_false"
+    )
+    parser.set_defaults(ttpr=True)
 
-
-    lp = ModelParams(parser)
-    args, _ = parser.parse_known_args(sys.argv[1:])
-    lp.num_splats = args.num_splats
-    lp.gs_type = args.gs_type
-
-
-    op = optimizationParamTypeCallbacks[args.gs_type](parser)
-    pp = PipelineParams(parser)
+    model_params = ModelParams(parser)
+    preliminary_args, _ = parser.parse_known_args(sys.argv[1:])
+    model_params.num_splats = preliminary_args.num_splats
+    model_params.gs_type = preliminary_args.gs_type
+    pipeline_params = PipelineParams(parser)
     args = parser.parse_args(sys.argv[1:])
 
+    if args.ttpr and args.ttpr_steps < 1:
+        parser.error("--ttpr_steps must be positive when TTPR is enabled")
+    if args.max_test_frames is not None and args.max_test_frames < 1:
+        parser.error("--max_test_frames must be positive")
 
-    print("torch cuda: ", torch.cuda.is_available())
-    print("Optimizing " + args.model_path)
     safe_state(args.quiet)
-    infering(
+    infer(
+        model_params.extract(args),
+        pipeline_params.extract(args),
         args.gs_type,
-        lp.extract(args), op.extract(args), pp.extract(args),
-        args.exp_name
+        args.exp_name,
+        args.ttpr,
+        args.ttpr_steps,
+        args.max_test_frames,
     )
-
-    print("\nInfering complete.")

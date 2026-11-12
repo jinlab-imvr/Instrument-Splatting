@@ -18,12 +18,6 @@ https://github.com/user-attachments/assets/c5a1e684-b998-489b-960c-9d7717bfd65b
 
 [Watch the TMI demo video](media/TMI_demo.mp4)
 
-## TODO
-
-- Add a complete `data_processing/` folder for preparing custom datasets. This folder will include a separate README with:
-  - a download link for the processed RARP dataset;
-  - a download link for the processed in-house dataset.
-
 ## Environment setup
 
 Tested with NVIDIA RTX A5000 GPU.
@@ -49,18 +43,15 @@ cd submodules/ml_aspanformer
 pip install -r requirements.txt
 
 cd ../..
-
-# Validate all bundled assets, CUDA extensions, and model forward passes
-python verify_installation.py
 ```
 
 All runtime model assets are included in the repository: the four instrument CAD models, two sets of initialized GS models, the Gripper-Tip Net checkpoint, ASpanFormer weights, and the AlexNet/LPIPS evaluation weights. The scripts do not download model weights at runtime.
 
 ## Dataset
-Our customized datasets follow the structure in surgpose_sample(https://drive.google.com/file/d/1qAv-YpouDOFbf7a4epeeuXkx5GW5sCFo/view?usp=sharing), containing
+Our customized datasets follow the structure in [surgpose_sample](https://drive.google.com/file/d/1qAv-YpouDOFbf7a4epeeuXkx5GW5sCFo/view?usp=sharing). The complete preparation and validation pipeline is documented in [`data_processing/README.md`](data_processing/README.md). Each dataset contains:
 1) `color`: left RGB images after stereo rectification;
 2) `mask_all`: mask for overall instruments (not used);
-3) `depth`: depth GT with unit of mm. Estimated by stereo matching with [MonSter](https://github.com/Junda24/MonSter);
+3) `depth`: optional depth GT with unit of mm, estimated by stereo matching with [MonSter](https://github.com/Junda24/MonSter);
 4) `l_mask`: part-wise mask labeled with [SAM2](https://github.com/facebookresearch/sam2);
 5) `mappings.json`: color scalars to part (not used);
 6) `testing_iterations.txt`: iterations for testing phase;
@@ -106,8 +97,14 @@ python texture_learning.py --source_path data/surgpose_sample --task_name exp1
 To obtain the final image quality estimation, run:
 
 ```
+# TTPR is enabled by default
 python infer.py --source_path data/surgpose_sample --exp_name exp1
+
+# Disable test-time pose refinement
+python infer.py --source_path data/surgpose_sample --exp_name exp1 --no-ttpr
 ```
+
+The default TTPR setting performs 200 pose-refinement steps per test frame. Use `--ttpr_steps` to change this value. Results are written to `Results/<exp_name>/inference_ttpr/` or `Results/<exp_name>/inference_no_ttpr/`.
 
 ## Citation
 
