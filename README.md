@@ -10,9 +10,9 @@ Official code implementation for [Instrument-Splatting](https://arxiv.org/abs/25
 
 ## Demo
 
-### MIA_demp
+### MIA_demo.mp4
 
-https://github.com/user-attachments/assets/97af5e67-2ef4-44e6-87f2-133c73ccf6b3
+https://github.com/user-attachments/assets/53ac2999-31dd-43e1-b96f-ece10b5778a1
 
 ## Environment setup
 
