@@ -1,6 +1,6 @@
 # Data Preprocessing
 
-This folder provides the conversion pipeline for the Instrument-Splatting++ In-house dataset. The public release contains the first 100 sampled frames of two clips. Their original source-video frame IDs are listed in `frame_sampling_and_resize.txt`, together with the complete 225-frame and 120-frame EndoVis sequences used in the experiments.
+This folder provides the conversion pipeline for the Instrument-Splatting++ In-house dataset. The public release contains the first 100 sampled frames of two clips. Their original source-video frame IDs are listed in `frame_sampling_and_resize.txt`.
 
 ## In-house dataset
 
