@@ -48,7 +48,7 @@ cd ../..
 All runtime model assets are included in the repository: the four instrument CAD models, two sets of initialized GS models, the Gripper-Tip Net checkpoint, ASpanFormer weights, and the AlexNet/LPIPS evaluation weights. The scripts do not download model weights at runtime.
 
 ## Dataset
-The public dataset release is limited to the 100-frame [surgpose_sample](https://drive.google.com/file/d/1qAv-YpouDOFbf7a4epeeuXkx5GW5sCFo/view?usp=sharing) subset. Its frame selection and the complete preparation pipeline are documented in [`data_preprocessing/README.md`](data_preprocessing/README.md). Each dataset contains:
+The public release of the [In-house dataset](https://drive.google.com/file/d/1qAv-YpouDOFbf7a4epeeuXkx5GW5sCFo/view?usp=sharing) contains two 100-frame clips. Their frame selections and the complete preparation pipeline are documented in [`data_preprocessing/README.md`](data_preprocessing/README.md). Each dataset contains:
 1) `color`: left RGB images after stereo rectification;
 2) `mask_all`: mask for overall instruments (not used);
 3) `depth`: optional stereo depth maps in mm, estimated with [MonSter](https://github.com/Junda24/MonSter);
@@ -62,7 +62,7 @@ The data structure is as follows:
 
 ```
 data
-| - surgpose_sample
+| - in_house_dataset
 |   | - mask_all/
 |   | - depth/
 |   | - color/
@@ -86,7 +86,7 @@ Estimate the per-frame instrument poses:
 
 ```bash
 python pose_tracking_tipNet.py \
-    --source_path data/surgpose_sample \
+    --source_path data/in_house_dataset \
     --task_name exp1 \
     --pretrain_params pretrain_3dgs_dense_param
 ```
@@ -99,7 +99,7 @@ Run RTL with the tracking result from the first stage:
 
 ```bash
 python texture_learning.py \
-    --source_path data/surgpose_sample \
+    --source_path data/in_house_dataset \
     --task_name exp1 \
     --pretrain_params pretrain_3dgs_dense_param
 ```
@@ -112,13 +112,13 @@ Inference loads the trained part models and `memory_pool.pth` from `Results/<exp
 
 ```bash
 # TTPR is enabled by default
-python infer.py --source_path data/surgpose_sample --exp_name exp1
+python infer.py --source_path data/in_house_dataset --exp_name exp1
 
 # Use a custom number of TTPR steps
-python infer.py --source_path data/surgpose_sample --exp_name exp1 --ttpr_steps 100
+python infer.py --source_path data/in_house_dataset --exp_name exp1 --ttpr_steps 100
 
 # Disable test-time pose refinement
-python infer.py --source_path data/surgpose_sample --exp_name exp1 --no-ttpr
+python infer.py --source_path data/in_house_dataset --exp_name exp1 --no-ttpr
 ```
 
 TTPR performs 200 pose-refinement steps per test frame by default. Use `--max_test_frames <N>` for a short inference run.

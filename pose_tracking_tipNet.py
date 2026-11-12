@@ -812,7 +812,7 @@ if __name__ == "__main__":
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default=None)
-    parser.add_argument("--task_name", type=str, default='surgpose7_tracking')
+    parser.add_argument("--task_name", type=str, default='in_house_tracking')
     parser.add_argument(
         "--pretrain_params",
         type=str,

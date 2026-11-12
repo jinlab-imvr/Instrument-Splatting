@@ -1,5 +1,5 @@
-SAR-RARP50 FIRST-100-FRAME MANIFEST
-====================================
+IN-HOUSE DATASET FIRST-100-FRAME MANIFEST
+==========================================
 
 Preprocessing
 -------------
@@ -11,9 +11,11 @@ linear interpolation without cropping or padding.
 
 Frame-ID convention
 -------------------
-retained_frame_ids are the original source-video frame IDs. This public subset
+retained_frame_ids are the original source-video frame IDs. Each sequence
 contains only the first 100 retained IDs in temporal order.
 
+Sequence 1
+----------
 video_sequence_id: SARRARP502022_needleGrasping_166_video15
 video_id: 15
 retained_frame_ids (100):
@@ -26,3 +28,18 @@ retained_frame_ids (100):
   3456, 3458, 3460, 3462, 3464, 3466, 3468, 3470, 3472, 3474, 3476, 3478,
   3480, 3482, 3484, 3486, 3488, 3490, 3492, 3494, 3496, 3498, 3500, 3502,
   3504, 3506, 3508, 3510
+
+Sequence 2
+----------
+video_sequence_id: SARRARP502022_needleGrasping_496_video23
+video_id: 23
+retained_frame_ids (100):
+  966, 968, 970, 972, 974, 976, 978, 980, 982, 984, 986, 988,
+  990, 992, 994, 996, 998, 1000, 1002, 1004, 1006, 1008, 1010, 1012,
+  1014, 1016, 1018, 1020, 1022, 1024, 1026, 1028, 1030, 1032, 1034, 1036,
+  1038, 1040, 1042, 1044, 1046, 1048, 1050, 1052, 1054, 1056, 1058, 1060,
+  1062, 1064, 1066, 1068, 1070, 1072, 1074, 1076, 1078, 1080, 1082, 1084,
+  1086, 1088, 1090, 1092, 1094, 1096, 1098, 1100, 1102, 1104, 1106, 1108,
+  1110, 1112, 1114, 1116, 1118, 1120, 1122, 1124, 1126, 1128, 1130, 1132,
+  1134, 1136, 1138, 1140, 1142, 1144, 1146, 1148, 1150, 1152, 1154, 1156,
+  1158, 1160, 1162, 1164

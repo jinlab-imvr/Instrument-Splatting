@@ -1,10 +1,10 @@
 # Data Preprocessing
 
-This folder provides the conversion pipeline for Instrument-Splatting++ datasets. The public data release is limited to the first 100 sampled frames of one clip. Their original source-video frame IDs are listed in `frame_sampling_and_resize.txt`.
+This folder provides the conversion pipeline for the Instrument-Splatting++ In-house dataset. The public release contains the first 100 sampled frames of two clips. Their original source-video frame IDs are listed in `frame_sampling_and_resize.txt`.
 
-## Public subset
+## In-house dataset
 
-- 100-frame processed subset: [surgpose_sample](https://drive.google.com/file/d/1qAv-YpouDOFbf7a4epeeuXkx5GW5sCFo/view?usp=sharing)
+- Processed data: [In-house dataset](https://drive.google.com/file/d/1qAv-YpouDOFbf7a4epeeuXkx5GW5sCFo/view?usp=sharing)
 - Sampling and resize record: [`frame_sampling_and_resize.txt`](frame_sampling_and_resize.txt)
 
 ## 1. Extract frames
@@ -22,7 +22,7 @@ python data_preprocessing/process_dataset.py extract-video \
   --height 352
 ```
 
-`--stop-frame` is exclusive, so this command extracts the 100 source frames from 3312 through 3510 recorded in `frame_sampling_and_resize.txt`. Apply the same selection to the synchronized right video.
+`--stop-frame` is exclusive, so this command extracts the first clip's 100 source frames from 3312 through 3510. For the second clip, use `--start-frame 966 --stop-frame 1166`. Apply the same selection to each synchronized right video.
 
 ## 2. Rectify stereo images
 
@@ -80,7 +80,7 @@ python data_preprocessing/process_dataset.py assemble \
   --semantic-mask-dir work/l_mask \
   --depth-dir work/depth \
   --camera-json data_preprocessing/camera.example.json \
-  --output-dir data/my_sequence \
+  --output-dir data/in_house_dataset \
   --test-every 8
 ```
 
@@ -89,7 +89,7 @@ Use `--test-ids 5 27 33` or `--test-ids-file split.txt` to reproduce a fixed spl
 The assembled dataset contains:
 
 ```text
-my_sequence/
+in_house_dataset/
 ├── color/
 ├── depth/                    # optional
 ├── l_mask/
@@ -104,7 +104,7 @@ my_sequence/
 ## 6. Validate
 
 ```bash
-python data_preprocessing/process_dataset.py validate --dataset-dir data/my_sequence
+python data_preprocessing/process_dataset.py validate --dataset-dir data/in_house_dataset
 ```
 
 Validation checks image availability and resolution, semantic IDs, camera matrices, initial transforms, and disjoint train/test splits that cover every frame.

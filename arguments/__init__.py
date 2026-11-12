@@ -49,7 +49,7 @@ class ParamGroup:
 class ModelParams(ParamGroup): 
     def __init__(self, parser, sentinel=False):
         self.sh_degree = 3
-        self._source_path = "data/surgpose_sample"
+        self._source_path = "data/in_house_dataset"
         self.exp_dir = os.path.join(REPO_ROOT, "Results")
         self.pretrain_path = os.path.join(REPO_ROOT, "pretrained_models")
         
