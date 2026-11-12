@@ -5,7 +5,7 @@ from utils.loss_utils import l1_loss, ssim, l1_loss_normalization
 
 from renderer.gaussian_renderer import render_with_instrument_v3 as render
 import sys
-from scene import Scene, InstrumentScene
+from scene import InstrumentScene
 from utils.instrument import Instrument
 from games import (
     optimizationParamTypeCallbacks,
@@ -22,10 +22,6 @@ from utils.graphics_utils import build_rotation, matrix_to_quaternion
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams
 from torchvision.utils import save_image
-from submodules.ml_aspanformer.src.ASpanFormer.aspanformer import ASpanFormer 
-from submodules.ml_aspanformer.src.config.default import get_cfg_defaults
-from submodules.ml_aspanformer.src.utils.misc import lower_config
-from submodules.ml_aspanformer.demo import demo_utils
 import numpy as np
 import random
 try:
@@ -290,18 +286,38 @@ def joint_texture_learning(instrument: Instrument, pose: Pose, viewpoint_cam, op
 #                     override_camera_center=override_camera_center, render_semantics_silhouette=True)
 # semantic_silhouette = render_pkg2["render"].permute(2, 0, 1)
 # save_image(semantic_silhouette,'test1.png')
-def training(gs_type, dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, save_xyz):
+def save_models(instrument, memory_pool, output_dir, iteration):
+    os.makedirs(output_dir, exist_ok=True)
+    for part_name, part in instrument.part_dict.items():
+        model = part.gaussian_model
+        checkpoint = {
+            "opacity": model._opacity,
+            "alpha": model._alpha,
+            "xyz": model._xyz,
+            "vertices": model.vertices,
+            "rotation": model._rotation,
+            "scale": model._scale,
+            "scaling": model._scaling,
+            "features_dc": model._features_dc,
+            "features_rest": model._features_rest,
+        }
+        filename = "{}_trained_3dgs_param{}.pth".format(part_name, iteration)
+        torch.save(checkpoint, os.path.join(output_dir, filename))
+    torch.save(memory_pool, os.path.join(output_dir, "memory_pool.pth"))
+
+
+def training(gs_type, dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations,
+             checkpoint, debug_from, save_xyz, memory_pool_path, task_name, pretrain_params):
     first_iter = 0
-    scene = InstrumentScene(dataset, gaussianModel[gs_type], dataset.sh_degree)
+    scene = InstrumentScene(
+        dataset,
+        gaussianModel[gs_type],
+        dataset.sh_degree,
+        pretrain_params=pretrain_params,
+        pretrain_path=dataset.pretrain_path,
+    )
     instrument = scene.instrument
     instrument.training_setup(opt)
-    matcher_config = get_cfg_defaults()
-    matcher_config.merge_from_file('submodules/ml_aspanformer/configs/aspan/outdoor/aspan_test.py')
-    _config = lower_config(matcher_config)
-    matcher = ASpanFormer(config=_config['aspan'])
-    state_dict = torch.load('submodules/ml_aspanformer/weights/outdoor.ckpt', map_location='cpu')['state_dict']
-    matcher.load_state_dict(state_dict, strict=False)
-    matcher.cuda(), matcher.eval()
     if checkpoint:
         (model_params, first_iter) = torch.load(checkpoint)
         instrument.restore(model_params, opt)
@@ -316,80 +332,21 @@ def training(gs_type, dataset, opt, pipe, testing_iterations, saving_iterations,
 
     if not viewpoint_stack:
         viewpoint_stack = scene.getTrainCameras()
-    viewpoint_cam = viewpoint_stack[0]
-    # viewpoint_stack = viewpoint_stack[:25]
-    rot = torch.from_numpy(viewpoint_cam.R).cuda()
-    trans = torch.from_numpy(viewpoint_cam.T + 0.000).cuda()
-    alpha = torch.tensor([0.0], dtype=torch.float32, device="cuda")
-    theta_l = torch.tensor([15. / 180. * torch.pi], dtype=torch.float32, device="cuda")
-    theta_r = torch.tensor([15. / 180. * torch.pi], dtype=torch.float32, device="cuda")
-    pose = Pose(rot, trans, alpha, theta_l, theta_r)
 
-    # online mode to run the render and compare (global iterations) 
-    # memory_pool = {}
-    rot0, trans0, alpha0, theta_l0, theta_r0 = rot.detach().clone(), trans.detach().clone(), alpha.detach().clone(), theta_l.detach().clone(), theta_r.detach().clone()
-    # perform tracking
-    
-    memory_pool_list = ['memory_pool_3dgs_endovis2017', 'memory_pool_3dgs_endovis2017_keypoints',
-                        'memory_pool_mesh_endovis2017']
-    # load the memory pool
-    memory_pool_list = [torch.load(mp+'.pth')  for mp in memory_pool_list]
-    img_num = len(list(memory_pool_list[0].keys()))
-    # texture learning
-    progress_bar = tqdm(range(first_iter, opt.texture_learning_iterations), desc="Tracking progress")
-    named_iteration = 0
-    name_iteration = False
+    if not os.path.isfile(memory_pool_path):
+        raise FileNotFoundError("Missing tracking memory pool: {}".format(memory_pool_path))
+    final_memory_pool = torch.load(memory_pool_path)
     semantic_silhouette0, depth0 = None, None
     original_geometry_dict = {}
-    
-    iterations = list(memory_pool_list[0].keys())
-    final_memory_pool = {}
-    
-    psnr_stacks = []
-    for j in iterations:
-        silhouette_dices = []
-        pose_infos = []
-        dices = []
-        for memory_pool in memory_pool_list:
-            pose_info, dice = memory_pool[j]['pose_info'], memory_pool[j]['dice']
-            dices.append(dice)
-            pose_infos.append(pose_info)
-            with torch.no_grad():
-                instrument.forward_kinematics(*pose_info.get_pose(), gs_grad=True, pose_grad = False)
-                transformation = torch.eye(4, device="cuda")
-                transformation[:3, :3] = rot
-                transformation[:3, 3] = trans
-                override_camera_center = torch.inverse(transformation)[:3, 3] * 1000
-                bg = torch.rand((3), device="cuda") if opt.random_background else background
-                render_pkg = render(viewpoint_cam, instrument, pipe, bg,
-                    override_camera_center=override_camera_center, render_semantics_silhouette=True)
-                semantic_silhouette = render_pkg["render"].permute(2, 0, 1)
-                wrist_mask = semantic_silhouette[1] > 0.5
-                shaft_mask = semantic_silhouette[0] > 0.5
-                gripper_mask = semantic_silhouette[2] > 0.5
-                semantic_silhouette = torch.cat([semantic_silhouette[0:1] * shaft_mask, semantic_silhouette[1:2] * wrist_mask, semantic_silhouette[2:3] * gripper_mask], dim=0)
-                silhouette = torch.sum(semantic_silhouette, dim=0)
-                gt_semantic_map = viewpoint_cam.original_semantic_mask.cuda()
-                gt_semantic_map = gt_semantic_map.permute(2, 0, 1)
-                gt_silhouette = torch.sum(gt_semantic_map, dim=0)
-                silhouette_dice = Dice(silhouette, gt_silhouette*1.)
-                silhouette_dices.append(silhouette_dice)
-        # Order the silhouette_dices and find the index with the highest silhouette dice
-        silhouette_dices = torch.tensor(silhouette_dices)
-        max_dice_idx = torch.argmax(silhouette_dices).item()
-        if silhouette_dices[max_dice_idx] - silhouette_dices[1] > 0 and  silhouette_dices[max_dice_idx] - silhouette_dices[1] < 0.03:
-            max_dice_idx = 1
-        final_memory_pool[j] = {'pose_info': pose_infos[max_dice_idx], 'dice': dices[max_dice_idx]}
+
+    iterations = sorted(final_memory_pool.keys())
+    if not iterations:
+        raise ValueError("The tracking memory pool is empty")
 
     psnr_dict = {}
-    for i in range(opt.texture_learning_iterations+1):
-        if not name_iteration:
-            iteration = random.choice(iterations)
-            if iteration in remove_endovis_2017:
-                i = i -1
-                continue
-        else:
-            iteration = named_iteration
+    progress_bar = tqdm(range(opt.texture_learning_iterations + 1), desc="Texture learning")
+    for i in progress_bar:
+        iteration = random.choice(iterations)
         
         # Every 1000 its we increase the levels of SH up to a maximum degree
         if i % 400 == 0 and i < 10000:
@@ -414,22 +371,28 @@ def training(gs_type, dataset, opt, pipe, testing_iterations, saving_iterations,
             updated_joint_state = pose.get_pose()
             final_memory_pool[iteration]['pose_info'] = Pose(*updated_joint_state, init_optimizer=False)
             if i > 19000:
-                if os.path.exists("texture_learning_visulization_joint") == False:
-                    os.mkdir("texture_learning_visulization")
+                visualization_dir = os.path.join(dataset.exp_dir, task_name, "texture_learning_visualization")
+                os.makedirs(visualization_dir, exist_ok=True)
                 vis = torch.cat([gt_image, image], dim=2)
                 vis = F.interpolate(vis.unsqueeze(0), scale_factor=0.5, mode="bilinear", align_corners=True).squeeze(0)
-                save_image(vis, f"texture_learning_visulization_joint/texture_learning_{iteration}.png")
+                save_image(vis, os.path.join(visualization_dir, "texture_learning_{}.png".format(iteration)))
 
             with torch.no_grad():
                 if i % 1 == 0 or i == 1:
-                    if os.path.exists("text_learning_joint") == False:
-                        os.mkdir("text_learning_joint")
-                    save_image(image, f"text_learning_joint/img{iteration}.png")
+                    preview_dir = os.path.join(dataset.exp_dir, task_name, "texture_learning_previews")
+                    os.makedirs(preview_dir, exist_ok=True)
+                    save_image(image, os.path.join(preview_dir, "img{}.png".format(iteration)))
                 ema_loss_for_log = psnr_val.mean().item()
                 psnr_dict[iteration] = ema_loss_for_log
                 if i % 10 == 0:
                     progress_bar.set_postfix({"Texture Learning PSNR": f"{ema_loss_for_log:.{3}f}"})
-                    progress_bar.update(10)
+
+    save_models(
+        instrument,
+        final_memory_pool,
+        os.path.join(dataset.exp_dir, task_name),
+        opt.texture_learning_iterations,
+    )
      
             
 if __name__ == "__main__":
@@ -447,6 +410,14 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default=None)
     parser.add_argument("--save_xyz", action='store_true')
+    parser.add_argument("--task_name", type=str, default="exp1")
+    parser.add_argument("--memory_pool", type=str, default=None)
+    parser.add_argument(
+        "--pretrain_params",
+        type=str,
+        default="pretrain_3dgs_dense_param",
+        choices=("pretrain_param_3dgs", "pretrain_3dgs_dense_param"),
+    )
 
     lp = ModelParams(parser)
     args, _ = parser.parse_known_args(sys.argv[1:])
@@ -457,6 +428,10 @@ if __name__ == "__main__":
     op = optimizationParamTypeCallbacks[args.gs_type](parser)
     pp = PipelineParams(parser)
     args = parser.parse_args(sys.argv[1:])
+
+    memory_pool_path = args.memory_pool
+    if memory_pool_path is None:
+        memory_pool_path = os.path.join(args.exp_dir, args.task_name, "memory_pool.pth")
 
     args.save_iterations.append(args.iterations)
 
@@ -469,7 +444,8 @@ if __name__ == "__main__":
         args.gs_type,
         lp.extract(args), op.extract(args), pp.extract(args),
         args.test_iterations, args.save_iterations, args.checkpoint_iterations,
-        args.start_checkpoint, args.debug_from, args.save_xyz
+        args.start_checkpoint, args.debug_from, args.save_xyz,
+        memory_pool_path, args.task_name, args.pretrain_params
     )
 
     print("\nTraining complete.")

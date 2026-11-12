@@ -11,6 +11,11 @@ data/
 experiments/
 outputs/
 *.log
+cameras.json
+*_input.ply
+difference/
 
 checkpoints/*
 !checkpoints/checkpoint_ToolTipNet.pth
+!checkpoints/alexnet-owt-7be5be79.pth
+!checkpoints/lpips_alex_v0.1.pth

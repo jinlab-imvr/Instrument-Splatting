@@ -13,6 +13,8 @@ from argparse import ArgumentParser, Namespace
 import sys
 import os
 
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
 class GroupParams:
     pass
 
@@ -48,8 +50,8 @@ class ModelParams(ParamGroup):
     def __init__(self, parser, sentinel=False):
         self.sh_degree = 3
         self._source_path = "data/surgpose_sample"
-        self.exp_dir = "experiments"
-        self.pretrain_path = 'pretrained_models'
+        self.exp_dir = os.path.join(REPO_ROOT, "Results")
+        self.pretrain_path = os.path.join(REPO_ROOT, "pretrained_models")
         
         self._model_path = ""
         self._images = "images"

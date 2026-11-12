@@ -176,7 +176,9 @@ class KeyPointNet(nn.Module):
         else:
             self.device = "cpu"
 
-        deeplabv3_resnet50 = models.segmentation.deeplabv3_resnet50(pretrained=True)
+        deeplabv3_resnet50 = models.segmentation.deeplabv3_resnet50(
+            weights=None, weights_backbone=None
+        )
         deeplabv3_resnet50.classifier[4] = torch.nn.Conv2d(256, 1, kernel_size=(1, 1), stride=(1, 1)) # Change final layer to 2 classes
 
         self.backbone = torch.nn.Sequential(list(deeplabv3_resnet50.children())[0])
@@ -252,7 +254,9 @@ class KeyPointPoseNet(nn.Module):
         else:
             self.device = "cpu"
 
-        deeplabv3_resnet50 = models.segmentation.deeplabv3_resnet50(pretrained=True)
+        deeplabv3_resnet50 = models.segmentation.deeplabv3_resnet50(
+            weights=None, weights_backbone=None
+        )
         deeplabv3_resnet50.classifier[4] = torch.nn.Conv2d(256, 1, kernel_size=(1, 1), stride=(1, 1)) # Change final layer to 2 classes
 
         self.backbone = torch.nn.Sequential(list(deeplabv3_resnet50.children())[0])

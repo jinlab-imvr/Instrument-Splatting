@@ -19,12 +19,9 @@ https://github.com/user-attachments/assets/c5a1e684-b998-489b-960c-9d7717bfd65b
 Tested with NVIDIA RTX A5000 GPU.
 
 ```bash
-# Clone the Instrument-Splatting++ branch with submodules
-git clone --recursive --branch 'instrument-splatting++' https://github.com/jinlab-imvr/Instrument-Splatting.git
+# Clone the Instrument-Splatting++ branch
+git clone --branch 'instrument-splatting++' https://github.com/jinlab-imvr/Instrument-Splatting.git
 cd Instrument-Splatting
-
-# If you already cloned without --recursive, initialize submodules
-git submodule update --init --recursive
 
 # Create conda environment
 conda create -n instrument_splatting python=3.7 
@@ -42,13 +39,19 @@ cd submodules/ml_aspanformer
 pip install -r requirements.txt
 
 cd ../..
+
+# Validate all bundled assets, CUDA extensions, and model forward passes
+python verify_installation.py
 ```
+
+All runtime model assets are included in the repository: the four instrument CAD models, two sets of initialized GS models, the Gripper-Tip Net checkpoint, ASpanFormer weights, and the AlexNet/LPIPS evaluation weights. The scripts do not download model weights at runtime.
+
 ## Dataset
 Our customized datasets follow the structure in surgpose_sample(https://drive.google.com/file/d/1qAv-YpouDOFbf7a4epeeuXkx5GW5sCFo/view?usp=sharing), containing
 1) `color`: left RGB images after stereo rectification;
 2) `mask_all`: mask for overall instruments (not used);
 3) `depth`: depth GT with unit of mm. Estimated by stereo matching with [MonSter](https://github.com/Junda24/MonSter);
-4) `l_masks`: part-wise mask labeled with [SAM2](https://github.com/facebookresearch/sam2);
+4) `l_mask`: part-wise mask labeled with [SAM2](https://github.com/facebookresearch/sam2);
 5) `mappings.json`: color scalars to part (not used);
 6) `testing_iterations.txt`: iterations for testing phase;
 7) `training_iterations.txt`: iterations for training phase;
@@ -62,7 +65,7 @@ data
 |   | - mask_all/
 |   | - depth/
 |   | - color/
-|   | - l_masks/
+|   | - l_mask/
 |   | - mappings.json
 |   | - testing_iterations.txt
 |   | - training_iterations.txt  
@@ -85,7 +88,7 @@ python pose_tracking_tipNet.py --source_path data/surgpose_sample --task_name ex
 ### Texture Learning
 To learn the instrument appearances, run the following example command:
 ```
-python texture_learning.py --source_path data/surgpose_sample
+python texture_learning.py --source_path data/surgpose_sample --task_name exp1
 ```
 
 ## Evaluation

@@ -5,9 +5,9 @@ from utils.loss_utils import l1_loss, ssim, l1_loss_normalization
 
 from renderer.gaussian_renderer import render_with_instrument_v3 as render
 import sys
-from instrument_splatting.scene import InstrumentScene
+from scene import InstrumentScene
 from utils.instrument import Instrument
-from instrument_splatting import (
+from games import (
     optimizationParamTypeCallbacks,
     gaussianModel
 )
@@ -25,10 +25,6 @@ from utils.graphics_utils import build_rotation, matrix_to_quaternion, rotation_
 from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams
 from torchvision.utils import save_image
-from submodules.ml_aspanformer.src.ASpanFormer.aspanformer import ASpanFormer 
-from submodules.ml_aspanformer.src.config.default import get_cfg_defaults
-from submodules.ml_aspanformer.src.utils.misc import lower_config
-from submodules.ml_aspanformer.demo import demo_utils
 import numpy as np
 import random
 try:
@@ -44,6 +40,8 @@ from scipy.ndimage import label
 from utils.loss_utils import dice as Dice
 import json
 
+
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
 
 
 remove_list = []
@@ -124,7 +122,24 @@ class LPIPS(object):
     borrowed from https://github.com/huster-wgm/Pytorch-metrics/blob/master/metrics.py
     """
     def __init__(self, device="cuda"):
-        self.model = lpips.LPIPS(net='alex').to(device)
+        linear_weights = os.path.join(REPO_ROOT, "checkpoints", "lpips_alex_v0.1.pth")
+        backbone_weights = os.path.join(REPO_ROOT, "checkpoints", "alexnet-owt-7be5be79.pth")
+        self.model = lpips.LPIPS(
+            net="alex",
+            pnet_rand=True,
+            model_path=linear_weights,
+            verbose=False,
+        )
+        alexnet_state = torch.load(backbone_weights, map_location="cpu")
+        feature_to_slice = {0: 1, 3: 2, 6: 3, 8: 4, 10: 5}
+        mapped_state = {}
+        for feature_index, slice_index in feature_to_slice.items():
+            for parameter_name in ("weight", "bias"):
+                source_key = "features.{}.{}".format(feature_index, parameter_name)
+                target_key = "slice{}.{}.{}".format(slice_index, feature_index, parameter_name)
+                mapped_state[target_key] = alexnet_state[source_key]
+        self.model.net.load_state_dict(mapped_state, strict=True)
+        self.model = self.model.to(device)
 
     def __call__(self, y_pred, y_true, normalized=True):
         """
@@ -140,10 +155,15 @@ class LPIPS(object):
         error =  self.model.forward(y_pred, y_true)
         return torch.mean(error)
     
-lpips = LPIPS()
+_lpips_metric = None
+
+
 def cal_lpips(a, b, device="cuda", batch=2):
     """Compute lpips.
     a, b: [batch, H, W, 3]"""
+    global _lpips_metric
+    if _lpips_metric is None:
+        _lpips_metric = LPIPS(device=device)
     if not torch.is_tensor(a):
         a = array2tensor(a, device)
     if not torch.is_tensor(b):
@@ -151,7 +171,7 @@ def cal_lpips(a, b, device="cuda", batch=2):
 
     lpips_all = []
     for a_split, b_split in zip(a.split(split_size=batch, dim=0), b.split(split_size=batch, dim=0)):
-        out = lpips(a_split, b_split)
+        out = _lpips_metric(a_split, b_split)
         lpips_all.append(out)
     lpips_all = torch.stack(lpips_all)
     lpips_mean = lpips_all.mean()
@@ -215,16 +235,6 @@ def infering(gs_type, dataset, opt, pipe, exp_name):
     rot0, trans0, alpha0, theta_l0, theta_r0 = rot.detach().clone(), trans.detach().clone(), alpha.detach().clone(), theta_l.detach().clone(), theta_r.detach().clone()
     # perform tracking
     
-    img_num = len(list(memory_pool.keys()))
-    # texture learning
-    progress_bar = tqdm(range(first_iter, opt.texture_learning_iterations), desc="Tracking progress")
-    named_iteration = 0
-    name_iteration = False
-    semantic_silhouette0, depth0 = None, None
-    original_geometry_dict = {}
-    
-
-
     assert os.path.exists(f"{scene.source_path}/testing_iterations.txt")
 
     with open(f"{scene.source_path}/testing_iterations.txt", "r") as f:
@@ -244,10 +254,12 @@ def infering(gs_type, dataset, opt, pipe, exp_name):
     psnrs = []
     lpipss = []
     rmses = []
+    evaluated_iterations = []
     # Training
     for i, iteration in enumerate(list(memory_pool.keys())):
         if iteration  not in testing_iterations:
             continue
+        evaluated_iterations.append(iteration)
     # Testing
     # for i, iteration in enumerate(testing_iterations):
         # Every 1000 its we increase the levels of SH up to a maximum degree
@@ -412,7 +424,7 @@ def infering(gs_type, dataset, opt, pipe, exp_name):
             return float(x.detach().cpu().item())
         return float(x)
 
-    for idx, iteration in enumerate(testing_iterations):
+    for idx, iteration in enumerate(evaluated_iterations):
         # try to get a human-friendly image name, fallback to iteration id
         try:
             image_name = viewpoint_stack[iteration].image_name
@@ -435,7 +447,7 @@ def infering(gs_type, dataset, opt, pipe, exp_name):
 
 if __name__ == "__main__":
     parser = ArgumentParser(description="Training script parameters")
-    parser.add_argument('--gs_type', type=str, default="gs_instrument")
+    parser.add_argument('--gs_type', type=str, default="gs_mesh")
     parser.add_argument("--num_splats", nargs="+", type=int, default=[2])
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 20_000, 30_000, 60_000, 90_000])
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 20_000, 30_000, 60_000, 90_000])
@@ -446,6 +458,7 @@ if __name__ == "__main__":
 
     lp = ModelParams(parser)
     args, _ = parser.parse_known_args(sys.argv[1:])
+    lp.num_splats = args.num_splats
     lp.gs_type = args.gs_type
 
 

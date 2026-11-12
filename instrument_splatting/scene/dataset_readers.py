@@ -190,7 +190,8 @@ def transform_vertices_function(vertices, c=1):
     return vertices
 
 def readInstrumentInfo(path, white_background, extension=".png"):
-    cad_path = './instrument_mesh'
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    cad_path = os.path.join(repo_root, 'instrument_mesh')
 
     print("Reading Training Transforms")
     train_cam_infos = readCamerasFromTransforms(path, "transforms.json", white_background, extension)
@@ -237,6 +238,5 @@ def readInstrumentInfo(path, white_background, extension=".png"):
 # sceneLoadTypeCallbacks = {
 #     "gs_instrument": readInstrumentInfo
 # }
-
 
 

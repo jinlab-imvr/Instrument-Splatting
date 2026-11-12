@@ -40,7 +40,8 @@ def transform_vertices_function(vertices, c=1):
     return vertices
 
 def readInstrumentMeshInfo(path, white_background, eval, num_splats, extension=".png", instance_id=0):
-    cad_path = './instrument_mesh'
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+    cad_path = os.path.join(repo_root, 'instrument_mesh')
 
     print("Reading Training Transforms")
     rarp_dataset = False 

@@ -41,6 +41,10 @@ from collections import deque
 from scipy.ndimage import label
 from utils.loss_utils import dice as Dice
 
+REPO_ROOT = os.path.dirname(os.path.abspath(__file__))
+ASPAN_CONFIG = os.path.join(REPO_ROOT, 'submodules', 'ml_aspanformer', 'configs', 'aspan', 'outdoor', 'aspan_test.py')
+ASPAN_WEIGHTS = os.path.join(REPO_ROOT, 'submodules', 'ml_aspanformer', 'weights', 'outdoor.ckpt')
+
 remove_endovis_2017 = [173,177,149, 150,151,152, 153, 163, 162]
 remove_endovis_2017 = [149, 177, 173, 195, 84, 50, 18, 35, 23, 34, 20, 14, 66, 188, 185, 187, 221, 192, 78, 194, 178, 193, 136, 49, 103, 45, 222, 147, 83, 25, 40, 74, 55, 183, 19, 202, 100, 79, 162, 163, 24, 29, 85, 58, 130, 80, 68, 86, 61, 81, 44, 189, 69, 121]
 remove_endovis_2017 = [18,19,173,177,149, 150,151,152, 153, 163, 162, 66, 101]
@@ -322,7 +326,7 @@ def chamfer_loss_loose_reg(pred_points, target_points, radius = None):
 
 def get_gripper_tips_from_ToolTipNet(mask, ckpt_path=None):
     if ckpt_path is None:
-        ckpt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'checkpoints', 'checkpoint_ToolTipNet.pth')
+        ckpt_path = os.path.join(REPO_ROOT, 'checkpoints', 'checkpoint_ToolTipNet.pth')
     mask = 1.0 * (mask > 0.5)
     gripper_mask = mask[2] > 0.5
     keypoint_net = KeyPointNet(n_kp=2, height=512, width=640, lim=[-1., 1., -1., 1.], use_gpu=True)
@@ -348,7 +352,7 @@ def track(instrument: Instrument, pose: Pose, lst_pose: Pose, viewpoint_cam, opt
         prev_theta_r = prev_theta_r.detach().clone()
         prev_rot = prev_rot.detach().clone()
     
-    tracking_iterations = opt.tracking_iterations + 1 if global_iteration == 0 else 2000
+    tracking_iterations = opt.tracking_iterations + 1
     progress_bar = tqdm(range(first_iter, tracking_iterations), desc="Tracking progress")
     
     min_loss = 10000
@@ -548,16 +552,22 @@ def visualize_depth_map(depth_map, output_path):
     plt.close()
 
 def training(gs_type, dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations,
-              checkpoint, debug_from, save_xyz, task_name):
+              checkpoint, debug_from, save_xyz, task_name, pretrain_params, max_frames):
     first_iter = 0
-    scene = InstrumentScene(dataset, gaussianModel[gs_type], dataset.sh_degree, pretrain_params='pretrain_param_3dgs') # 'pretrain_3dgs_dense_param'
+    scene = InstrumentScene(
+        dataset,
+        gaussianModel[gs_type],
+        dataset.sh_degree,
+        pretrain_params=pretrain_params,
+        pretrain_path=dataset.pretrain_path,
+    )
     instrument = scene.instrument
     instrument.training_setup(opt)
     matcher_config = get_cfg_defaults()
-    matcher_config.merge_from_file('submodules/ml_aspanformer/configs/aspan/outdoor/aspan_test.py')
+    matcher_config.merge_from_file(ASPAN_CONFIG)
     _config = lower_config(matcher_config)
     matcher = ASpanFormer(config=_config['aspan'])
-    state_dict = torch.load('submodules/ml_aspanformer/weights/outdoor.ckpt', map_location='cpu')['state_dict']
+    state_dict = torch.load(ASPAN_WEIGHTS, map_location='cpu')['state_dict']
     matcher.load_state_dict(state_dict, strict=False)
     matcher.cuda(), matcher.eval()
     if checkpoint:
@@ -574,6 +584,8 @@ def training(gs_type, dataset, opt, pipe, testing_iterations, saving_iterations,
 
     if not viewpoint_stack:
         viewpoint_stack = scene.getTrainCameras()
+    if max_frames is not None:
+        viewpoint_stack = viewpoint_stack[:max_frames]
     viewpoint_cam = viewpoint_stack[0]
     # viewpoint_stack = viewpoint_stack[:max_id]
     rot = torch.from_numpy(viewpoint_cam.R).cuda()
@@ -587,7 +599,9 @@ def training(gs_type, dataset, opt, pipe, testing_iterations, saving_iterations,
     memory_pool = {}
     rot0, trans0, alpha0, theta_l0, theta_r0 = rot.detach().clone(), trans.detach().clone(), alpha.detach().clone(), theta_l.detach().clone(), theta_r.detach().clone()
     # perform tracking
-    memory_pool_name = f'Results/{task_name}/memory_pool.pth'
+    result_dir = os.path.join(dataset.exp_dir, task_name)
+    os.makedirs(result_dir, exist_ok=True)
+    memory_pool_name = os.path.join(result_dir, 'memory_pool.pth')
     key_frame_pool = {} # save keyframe pose and image for re-localization
     if os.path.exists(memory_pool_name) == False:
         prev_pose = None
@@ -657,7 +671,7 @@ def training(gs_type, dataset, opt, pipe, testing_iterations, saving_iterations,
                 = track(instrument, pose, prev_pose, viewpoint_cam, opt, pipe, background, iteration)
             prev_rot, prev_trans, prev_alpha, prev_theta_l, prev_theta_r = pose.get_pose()
             prev_pose = Pose(prev_rot.clone(), prev_trans.clone(), prev_alpha.clone(), prev_theta_l.clone(), prev_theta_r.clone(), init_optimizer=False)
-            save_folder_name = f"Results/{task_name}/tracking_visualization"
+            save_folder_name = os.path.join(result_dir, "tracking_visualization")
             if os.path.exists(save_folder_name) == False:
                 os.makedirs(save_folder_name)
 
@@ -799,6 +813,13 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
     parser.add_argument("--start_checkpoint", type=str, default=None)
     parser.add_argument("--task_name", type=str, default='surgpose7_tracking')
+    parser.add_argument(
+        "--pretrain_params",
+        type=str,
+        default="pretrain_param_3dgs",
+        choices=("pretrain_param_3dgs", "pretrain_3dgs_dense_param"),
+    )
+    parser.add_argument("--max_frames", type=int, default=None)
     parser.add_argument("--save_xyz", action='store_true')
 
     lp = ModelParams(parser)
@@ -822,7 +843,8 @@ if __name__ == "__main__":
         args.gs_type,
         lp.extract(args), op.extract(args), pp.extract(args),
         args.test_iterations, args.save_iterations, args.checkpoint_iterations,
-        args.start_checkpoint, args.debug_from, args.save_xyz, args.task_name
+        args.start_checkpoint, args.debug_from, args.save_xyz, args.task_name,
+        args.pretrain_params, args.max_frames
     )
 
     print("\nTraining complete.")
