@@ -10,13 +10,11 @@ Official code implementation for [Instrument-Splatting](https://arxiv.org/abs/25
 
 ## Demo
 
-### Pose estimation & Reconstruction quality 
+### MIA_demp
 
-https://github.com/user-attachments/assets/c5a1e684-b998-489b-960c-9d7717bfd65b
+![MIA_demp](media/MIA_demp_preview.webp)
 
-### Complete pipeline
-
-[Watch the TMI demo video](media/TMI_demo.mp4)
+[Open the full-resolution video](media/MIA_demp.mp4)
 
 ## Environment setup
 
