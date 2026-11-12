@@ -12,9 +12,12 @@
 import torch
 import torch.nn.functional as F
 import sys
+from scipy.ndimage import label
 from datetime import datetime
 import numpy as np
 import random
+import matplotlib.pyplot as plt
+import os
 
 def standardize_quaternion(quaternions: torch.Tensor) -> torch.Tensor:
     """
@@ -188,6 +191,121 @@ def build_scaling_rotation(s, r):
 
     L = R @ L
     return L
+
+def read_log_npy(file_path, save_dir="Results/log_plots", sample_runs=20, random_seed=42):
+    """
+    读取 texture_learning_pose_log.npy 并：
+      1) 提取每个 image 的 best psnr (max) 和 best loss (min)，记录 run id 和 iter id
+      2) 绘图并保存：best_psnr/best_loss 条形图；随机采样若干 runs 的 psnr 随时间演化图
+
+    返回 summary 字典：{
+        image_name: {
+            'best_psnr': float, 'best_psnr_run': int, 'best_psnr_iter': int,
+            'best_loss': float, 'best_loss_run': int, 'best_loss_iter': int,
+            'num_runs': int
+        }, ...
+    }
+    """
+    os.makedirs(save_dir, exist_ok=True)
+    npy = np.load(file_path, allow_pickle=True).item()
+
+    summary = {}
+    all_runs = []  # list of (image_name, run_idx, psnr_array)
+
+    for image_name, data in npy.items():
+        psnrs_runs = data.get('psnrs', [])  # 每个元素是一个 run 的 psnr 列表
+        losses_runs = data.get('losses', [])
+
+        best_psnr = -np.inf
+        best_psnr_info = (None, None)  # (run_idx, iter_idx)
+        best_loss = np.inf
+        best_loss_info = (None, None)
+        psnrs_runs = [run for run in psnrs_runs if len(run) > 1]
+        losses_runs = [run for run in losses_runs if len(run) > 1]
+        max_psnrs = []
+        min_losses = []
+        for ri, run in enumerate(psnrs_runs):
+            arr = np.array(run, dtype=float)
+            if arr.size == 0:
+                continue
+            mi = arr.max()
+            max_psnrs.append(mi)
+            idx = int(arr.argmax())  # 0-based
+            if mi > best_psnr:
+                best_psnr = float(mi)
+                best_psnr_info = (ri, idx)
+            all_runs.append((image_name, ri, arr))
+
+        for ri, run in enumerate(losses_runs):
+            arr = np.array(run, dtype=float)
+            if arr.size == 0:
+                continue
+            mi = arr.min()
+            idx = int(arr.argmin())
+            if mi < best_loss:
+                best_loss = float(mi)
+                best_loss_info = (ri, idx)
+            min_losses.append(mi)
+
+        plt.figure()
+        plt.plot(max_psnrs, label="max_psnr")
+        plt.xlabel("Iteration")
+        plt.ylabel("PSNR")
+        plt.title(f"{image_name} - PSNR evolution")
+        plt.legend()
+        plt.grid()
+        plt.savefig(os.path.join(save_dir, f"{(image_name)}_psnr_evolution.png"), dpi=200)
+        plt.close()
+
+        plt.figure()
+        run_id = 10
+        psnrs = psnrs_runs[run_id]
+        plt.plot(psnrs, label="psnr_runs")
+        plt.xlabel("Iteration")
+        plt.ylabel("PSNR")
+        plt.title(f"{image_name} - PSNR")
+        plt.legend()
+        plt.grid()
+        plt.savefig(os.path.join(save_dir, f"{(image_name)}_{run_id}_psnr.png"), dpi=200)
+        plt.close()
+
+    return summary
+
+def extract_largest_connected_component(mask: torch.Tensor, min_size: int = 1, device: str = "cuda") -> torch.Tensor:
+    """
+    从二值 mask 中提取最大连通组件。
+
+    参数:
+      mask (torch.Tensor): 2D 张量, dtype 可以是 bool 或 0/1，位于 CPU 或 CUDA。
+      min_size (int): 如果最大组件的像素数小于该值，则返回全 False。
+      device (str): 返回张量所在设备（默认 "cuda"）。
+
+    返回:
+      torch.Tensor: 2D torch.bool 张量，shape 与输入 mask 一致，True 表示最大连通组件。
+    """
+    import numpy as _np
+    # 转为 CPU 的 uint8 numpy
+    if mask.dtype == torch.bool:
+        mask_np = mask.cpu().numpy().astype(_np.uint8)
+    else:
+        mask_np = (mask.cpu().numpy() != 0).astype(_np.uint8)
+
+    labeled_mask, num_features = label(mask_np)
+    if num_features == 0:
+        return torch.zeros_like(mask, dtype=torch.bool, device=device)
+
+    # 计算每个连通分量大小并选最大
+    component_sizes = [_np.sum(labeled_mask == i) for i in range(1, num_features + 1)]
+    largest_component = sorted(range(1, num_features + 1),
+                               key=lambda i: component_sizes[i - 1],
+                               reverse=True)[0]
+
+    largest_mask_np = (labeled_mask == largest_component)
+    if largest_mask_np.sum() < min_size:
+        return torch.zeros_like(mask, dtype=torch.bool, device=device)
+
+    largest_mask = torch.from_numpy(largest_mask_np).to(torch.bool).to(device)
+    return largest_mask
 
 def safe_state(silent):
     old_f = sys.stdout

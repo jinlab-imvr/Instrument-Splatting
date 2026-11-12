@@ -3,14 +3,14 @@ import  numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import torch
-from instrument_splatting.utils.graphics_utils import MeshPointCloud
+from games.mesh_splatting.utils.graphics_utils import MeshPointCloud
 from pathlib import Path
 from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
 import os
 # from utils.part import Part
-# from instrument_splatting.scene.dataset_readers import InstrumentSceneInfo
-from instrument_splatting.scene.gaussian_instrument_model import GaussianInstrumentModel
+# from scene.dataset_readers import InstrumentSceneInfo
+from games.mesh_splatting.scene.gaussian_mesh_model_3dgs import GaussianMeshModel
 
     
 class Part(object):
@@ -26,25 +26,36 @@ class Part(object):
         bias2world[:3, :3] = torch.tensor([[1, 0, 0], [0, 0, 1], [0, -1, 0]]).T
         bias2world = bias2world.float().cuda()
         world2part =  world2part @torch.linalg.inv(bias2world)
-        if name is "shaft":
-            self.keypoints = torch.tensor([[-0.009026, -1e-6, 0.004178]], device="cuda") @ world2part[:3,:3].t() + world2part[:3,3][None] 
-        elif name is "wrist":
-            self.keypoints = torch.tensor([[0.002693, -0.000254, 0.002975], [0.009,0,0.002344]], device="cuda") @ world2part[:3,:3].t() + world2part[:3,3][None] 
+        if name == "shaft":
+            #-0.009026, -1e-6, 0.004178
+            #[-0.010026, -0.000513, 0.004134]
+            self.keypoints = torch.tensor([[-0.010026, -0.000513, 0.004134]], device=world2part.device) @ world2part[:3,:3].t() + world2part[:3,3][None]
+            # self.keypoints = torch.tensor([[-0.010026, 0.0,0.0]], device=world2part.device) @ world2part[:3,:3].t() + world2part[:3,3][None]
+        elif name == "wrist":
+            # the first one was [0.009,0,0.002344]
+            self.keypoints = torch.tensor([[0.0093,-0.0002,0.002609], [0.007621, 0.000585,0.002825],[0.006484, -0.000722,0.003056],[0.005478,-0.000001,0.003149],
+                                           [0.004849, 0.00048, 0.003136],  [0.002693, -0.000254, 0.002975], [0.003328, 0.003073, 0.001283],
+                                             [0.003277,-0.0032,-0.001473]  ], device="cuda") # @ world2part[:3,:3].t() + world2part[:3,3][None]
+            # joint keypoint
+            # the first keypoint is the wrist joint, the second keypoint is the wrist origin (i.e., world origin in canonical state)
+            # self.keypoints = torch.tensor([[0.009, 0.0, 0.0], [0.0, 0.0, 0.0],], device=world2part.device) @ world2part[:3,:3].t() + world2part[:3,3][None]
         # elif "l_gripper" in name:
         #     self.keypoints = torch.tensor([[0.018439, 0.000635, -0.0003056]], device="cuda") @ world2part[:3,:3].t() + world2part[:3,3][None] 
         # elif "r_gripper" in name:
         #     self.keypoints = torch.tensor([[0.018439, -0.000635, -0.0003056]], device="cuda") @ world2part[:3,:3].t() + world2part[:3,3][None] 
         elif "l_gripper" in name:
-            self.keypoints = torch.tensor([[0.017935, 0.000635, 0.000748     ]], device="cuda") @ world2part[:3,:3].t() + world2part[:3,3][None] 
+            # [0.017935, 0.000635, 0.000748]
+            self.keypoints = torch.tensor([[0.017935, 0.000635, 0.000548]], device=world2part.device) @ world2part[:3,:3].t() + world2part[:3,3][None]
+            # self.keypoints = torch.tensor([[0.018439, 0.0, 0.0]], device = world2part.device) @ world2part[:3,:3].t() + world2part[:3,3][None]
         elif "r_gripper" in name:
-            self.keypoints = torch.tensor([[0.017935, -0.000635, 0.000748]], device="cuda") @ world2part[:3,:3].t() + world2part[:3,3][None] 
-
+            # [0.017935, -0.000635, 0.000748]
+            self.keypoints = torch.tensor([[0.017935, -0.000635, 0.000548]], device=world2part.device) @ world2part[:3,:3].t() + world2part[:3,3][None]
+            # self.keypoints = torch.tensor([[0.018439, 0.0, 0.0]], device = world2part.device) @ world2part[:3,:3].t() + world2part[:3,3][None]
     def get_vertices(self):
         self.vertices = torch.tensor(self.mesh.vertices)
         return self.vertices
 
-
-    def get_nomals(self, faces=None):
+    def get_normals(self, faces=None):
         self.normals = torch.tensor(self.mesh.vertex_normals)
         self.get_vertices()
         if faces is None:
@@ -79,7 +90,7 @@ class Part(object):
 
         densify_mask = max_length > max_length_threshold
 
-        
+
         return remove_mask, densify_mask, max_length.float(), max_idxes
     
 
@@ -88,7 +99,7 @@ class Part(object):
         dtype = [('x', 'f4'), ('y', 'f4'), ('z', 'f4'),
                 ('nx', 'f4'), ('ny', 'f4'), ('nz', 'f4'),
                 ('red', 'u1'), ('green', 'u1'), ('blue', 'u1')]
-        
+
         normals = np.zeros_like(xyz)
 
         elements = np.empty(xyz.shape[0], dtype=dtype)
@@ -115,7 +126,7 @@ class Part(object):
         self.triangles = self.vertices[self.faces]
         # initialize the points with even per-triangle sampling
         num_pts = surf_face_idxes.shape[0]
-        nomals = self.get_nomals(self.faces)
+        nomals = self.get_normals(self.faces)
         alpha = surf_alphas
         # normalize the alpha
         alpha = alpha / alpha.sum(dim=-1, keepdim=True)
@@ -148,7 +159,7 @@ class Part(object):
         densify_mask = densify_mask[~remove_mask]
         # initialize the points with even per-triangle sampling
         num_pts = num_pts_per_triangle * triangles.shape[0]
-        nomals = self.get_nomals(self.faces)
+        nomals = self.get_normals(self.faces)
         alpha = torch.rand((triangles.shape[0] * num_pts_per_triangle, 1, 3))
         # normalize the alpha
         alpha = alpha / alpha.sum(dim=2, keepdim=True)
@@ -250,13 +261,16 @@ class Part(object):
         Apply the transformation to the Gaussian models without changing the member variables.
         gaussian_grad = False while the transformation is differentialble.
         """
+        if self.keypoints.device != transformation.device:
+            transformation = transformation.to(self.keypoints.device)
         keypoints =  self.keypoints @ transformation[:3,:3].t() + transformation[:3,3][None]
         
         render_parameters = self.gaussian_model.apply_transform_params(transformation, gs_grad)
         render_parameters['keypoints'] = keypoints
         self.render_params = render_parameters
         return render_parameters
-    
+
+        
     def densify_mesh(self, iterations=1):
         """
         Densify the mesh by subdividing each triangle.

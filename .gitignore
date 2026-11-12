@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.so
+build/
+dist/
+*.egg-info/
+
+Results*/
+Matches/
+data/
+experiments/
+outputs/
+*.log
+
+checkpoints/*
+!checkpoints/checkpoint_ToolTipNet.pth

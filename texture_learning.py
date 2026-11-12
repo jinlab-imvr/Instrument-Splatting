@@ -5,32 +5,44 @@ from utils.loss_utils import l1_loss, ssim, l1_loss_normalization
 
 from renderer.gaussian_renderer import render_with_instrument_v3 as render
 import sys
-from instrument_splatting.scene import InstrumentScene
+from scene import Scene, InstrumentScene
 from utils.instrument import Instrument
-from instrument_splatting import (
+from games import (
     optimizationParamTypeCallbacks,
     gaussianModel
 )
+from utils.camera_utils import Camera
+import torch.autograd as autograd
 import torch.nn.functional as F
 from utils.general_utils import safe_state
 import uuid
 from tqdm import tqdm
-from utils.image_utils import psnr
+from utils.image_utils import psnr, load_viewcam_from_npz
 from utils.graphics_utils import build_rotation, matrix_to_quaternion
-from argparse import ArgumentParser
+from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams
 from torchvision.utils import save_image
 from submodules.ml_aspanformer.src.ASpanFormer.aspanformer import ASpanFormer 
 from submodules.ml_aspanformer.src.config.default import get_cfg_defaults
 from submodules.ml_aspanformer.src.utils.misc import lower_config
+from submodules.ml_aspanformer.demo import demo_utils
 import numpy as np
 import random
+try:
+    from torch.utils.tensorboard import SummaryWriter
+
+    TENSORBOARD_FOUND = True
+except ImportError:
+    TENSORBOARD_FOUND = False
+
 import cv2
 from collections import deque
 from scipy.ndimage import label
 from utils.loss_utils import dice as Dice
 
-remove_cases = []
+remove_endovis_2017 = [173,177,149, 150,151,152, 153, 163, 162]
+remove_endovis_2017 = [149, 177, 173, 195, 84, 50, 18, 35, 23, 34, 20, 14, 66, 188, 185, 187, 221, 192, 78, 194, 178, 193, 136, 49, 103, 45, 222, 147, 83, 25, 40, 74, 55, 183, 19, 202, 100, 79, 162, 163, 24, 29, 85, 58, 130, 80, 68, 86, 61, 81, 44, 189, 69, 121]
+remove_endovis_2017 = [18,19,173,177,149, 150,151,152, 153, 163, 162, 66, 101]
 def pixel_to_camera_coords(pixel_coords, depth_map, K):
     fx, fy = K[0, 0], K[1, 1]
     cx, cy = K[0, 2], K[1, 2]
@@ -38,6 +50,81 @@ def pixel_to_camera_coords(pixel_coords, depth_map, K):
     y = (pixel_coords[:, 1] - cy) * depth_map[pixel_coords[:, 1].astype(int), pixel_coords[:, 0].astype(int)] / fy
     z = depth_map[pixel_coords[:, 1].astype(int), pixel_coords[:, 0].astype(int)]
     return np.vstack((x, y, z)).T
+
+def get_gripper_tips(instrument: Instrument, gripper_segmentation_mask, wrist_segmentation_mask):
+    """
+    Get the tips of the instrument from the segmentation mask
+    """
+    # Label connected components
+    labeled_mask, num_features = label(gripper_segmentation_mask)
+    if num_features ==1:
+        gripper_coords = np.argwhere(labeled_mask == 1)
+        centroid = np.mean(gripper_coords, axis=0)
+        centered_coords = gripper_coords - centroid
+        _, _, vh = np.linalg.svd(centered_coords)
+        principal_axis = vh[0]
+        # get the orthogonal vector of principal axis
+        orthogonal_vector = np.array([principal_axis[1], -principal_axis[0]])
+        # Project the centered coordinates onto the orthogonal vector
+        projections = np.dot(centered_coords, orthogonal_vector)
+        # projected points with coord < 0 belongs to left gripper
+        left_gripper_coords = gripper_coords[projections < 0]
+        right_gripper_coords = gripper_coords[projections >= 0]
+
+    # Find the two largest components
+    component_sizes = [(labeled_mask == i).sum() for i in range(1, num_features + 1)]
+    largest_components = sorted(range(1, num_features + 1), key=lambda i: component_sizes[i - 1], reverse=True)[:2]
+
+    # Get the coordinates of the two largest components
+    gripper_coords1 = np.argwhere(labeled_mask == largest_components[0])
+    gripper_coords2 = np.argwhere(labeled_mask == largest_components[1])
+
+    # Compute the centroids of the two components
+    centroid1 = np.mean(gripper_coords1, axis=0)
+    centroid2 = np.mean(gripper_coords2, axis=0)
+
+    # Center the coordinates by subtracting the centroids
+    centered_coords1 = gripper_coords1 - centroid1
+    centered_coords2 = gripper_coords2 - centroid2
+
+    # Perform SVD on both components
+    _, _, vh1 = np.linalg.svd(centered_coords1)
+    _, _, vh2 = np.linalg.svd(centered_coords2)
+
+    # The principal axes are the first right-singular vectors
+    principal_axis1 = vh1[0]
+    principal_axis2 = vh2[0]
+
+    # Project the centered coordinates onto the principal axis
+    projections1 = np.dot(centered_coords1, principal_axis1)
+    projections2 = np.dot(centered_coords2, principal_axis2)
+
+    # Find the indices of the maximum and minimum projections
+    tip1_index = np.argmax(projections1)
+    tip2_index = np.argmin(projections1)
+    tip3_index = np.argmax(projections2)
+    tip4_index = np.argmin(projections2)
+
+    # Get the corresponding coordinates of the tips
+    tip1 = gripper_coords1[tip1_index]
+    tip2 = gripper_coords1[tip2_index]
+    tip3 = gripper_coords2[tip3_index]
+    tip4 = gripper_coords2[tip4_index]
+
+    # Determine which tip is farthest from the wrist
+    wrist_coords = np.argwhere(wrist_segmentation_mask > 0)
+    wrist_centroid = np.mean(wrist_coords, axis=0)
+
+    dist1 = np.linalg.norm(tip1 - wrist_centroid)
+    dist2 = np.linalg.norm(tip2 - wrist_centroid)
+    dist3 = np.linalg.norm(tip3 - wrist_centroid)
+    dist4 = np.linalg.norm(tip4 - wrist_centroid)
+
+    gripper1_tip = tip1 if dist1 > dist2 else tip2
+    gripper2_tip = tip3 if dist3 > dist4 else tip4
+
+    return gripper1_tip, gripper2_tip
+
 
 
 def proj_2d(K, xyz):
@@ -49,21 +136,16 @@ def proj_2d(K, xyz):
     xyz = torch.matmul(K.float(), xyz.t()).t()
     # Normalize the points
     xyz = xyz[:, :2] 
-    
+
     # Convert to numpy
     points_2d = xyz.cpu().numpy().astype(int)
-    
+
     # Create a blank image
     image = torch.zeros((512, 640, 3), dtype=torch.uint8).cpu().numpy()
-    
+
     # Draw points on the image
-    error_id = []
-    for i, point in enumerate(points_2d):
-        try:
-            cv2.circle(image, (point[0], point[1]), radius=3, color=(0, 255, 0), thickness=-1)
-        except:
-            print("Error drawing circle:", point)
-            error_id.append(i)
+    for point in points_2d:
+        cv2.circle(image, (point[0], point[1]), radius=3, color=(0, 255, 0), thickness=-1)
 
     # Save or display the image
     cv2.imwrite('projected_points.png', image)
@@ -93,9 +175,9 @@ class Pose(object):
             self.optimizer = torch.optim.Adam([
                 {'params': [self.rot], 'lr': 0.001, 'name': 'rot'},
                 {'params': [self.trans], 'lr': 0.0001, 'name': 'trans'},
-                {'params': [self.alpha], 'lr': 0.02, 'name': 'alpha'},
-                {'params': [self.theta_l], 'lr': 0.1, 'name': 'theta_l'},
-                {'params': [self.theta_r], 'lr': 0.1, 'name': 'theta_r'}
+                {'params': [self.alpha], 'lr': 0.005, 'name': 'alpha'},
+                {'params': [self.theta_l], 'lr': 0.01, 'name': 'theta_l'},
+                {'params': [self.theta_r], 'lr': 0.01, 'name': 'theta_r'}
             ], lr=0.0, eps=1e-15)
         else:
             self.rot = quat.detach().clone()
@@ -133,130 +215,102 @@ def rotation_matrix_z(angle_degrees):
     rotation_matrix = np.array([
         [cos_angle, -sin_angle, 0],
         [sin_angle, cos_angle, 0],
-        [0, 0, 1]
-    ])
+        [0, 0, 1]])
     return torch.tensor(rotation_matrix, dtype=torch.float32).cuda()
 
-def texture_learning(instrument: Instrument, pose: Pose, viewpoint_cam, opt, pipe, 
-                        background, global_iteration, semantic_silhouette0, depth0, testing, lateral_inversion = False):
+def joint_texture_learning(instrument: Instrument, pose: Pose, viewpoint_cam, opt, pipe, background, global_iteration, semantic_silhouette0, depth0):
     first_iter = 1
+    
     # semantic_silhouette0 = None
     min_loss = 10000
-    end_iteration = 2
-    min_loss_rgb = 10000
-    # loss_rgb_iters = deque(maxlen=50)
-    
-    psnr_max_dict = {'psnr':0, 'pose': None}
-    psnrs = []
-    losses = []
-    for iteration in range(first_iter, end_iteration):
+    for iteration in range(first_iter, 2):
         # Render
         bg = torch.rand((3), device="cuda") if opt.random_background else background
 
         rot, trans, alpha, theta_l, theta_r = pose.get_pose()
         
-        if lateral_inversion:
-            instrument.forward_kinematics(rot @ rotation_matrix_x(180), trans, -alpha, theta_r, theta_l, gs_grad=True, pose_grad = True)
-            transformation = torch.eye(4, device="cuda")
-            transformation[:3, :3] = rot @ rotation_matrix_x(180)
-            transformation[:3, 3] = trans 
+        # if global_iteration > 5000:
+        #     instrument.forward_kinematics(rot, trans, alpha, theta_l, theta_r, gs_grad=True, pose_grad = True)
+        # else:
+        if random.random() > 0:
+            instrument.forward_kinematics(rot, trans, alpha, theta_l, theta_r, gs_grad=True, pose_grad = False)
         else:
-            instrument.forward_kinematics(rot, trans, alpha, theta_l, theta_r, gs_grad=True, pose_grad = True)
-            transformation = torch.eye(4, device="cuda")
-            transformation[:3, :3] = rot
-            transformation[:3, 3] = trans 
-        override_camera_center = transformation[:3, 3] * 1000
-        render_pkg  = render(viewpoint_cam, instrument, pipe, bg, 
-                    override_camera_center=override_camera_center, active_sh_degree=None, render_semantics_silhouette=False)
-        render_pkg2 = render(viewpoint_cam, instrument, pipe, bg-1, 
+            instrument.forward_kinematics(rot @ rotation_matrix_x(180), trans, -alpha, theta_r, theta_l, gs_grad=True, pose_grad = False)
+        transformation = torch.eye(4, device="cuda")
+        transformation[:3, :3] = rot
+        transformation[:3, 3] = trans
+        override_camera_center = torch.inverse(transformation)[:3, 3] * 1000
+        render_pkg = render(viewpoint_cam, instrument, pipe, bg,
+                    override_camera_center=override_camera_center, render_semantics_silhouette=False)
+        render_pkg2 = render(viewpoint_cam, instrument, pipe, bg,
                     override_camera_center=override_camera_center, render_semantics_silhouette=True)
         semantic_silhouette = render_pkg2["render"].permute(2, 0, 1)
         depth = render_pkg2["depth"]
         image, opacity, viewspace_point_tensor, visibility_filter, radii = render_pkg["render"], render_pkg["opacity"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"]
-        
+
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
-        image_name = viewpoint_cam.image_name
-        # generate a dictionary to store the loss and psnr for each iteration
-        
         gt_semantic_map = viewpoint_cam.original_semantic_mask.cuda()
         gt_semantic_map = gt_semantic_map.permute(2, 0, 1)  
 
+        gt_image[:, (gt_semantic_map.sum(dim=0) == 0)] = 1
         image = image.permute(2, 0, 1)
-        psnr_val = psnr(image, gt_image)
-        if psnr_val.mean().item() > psnr_max_dict['psnr']:
-                psnr_max_dict['psnr'] = psnr_val.mean().item()
-                psnr_max_dict['pose'] = pose.get_pose()
-                if iteration == 1:
-                    psnr_max_dict['init_psnr'] = psnr_val.mean().item()
-                    psnr_max_dict['init_pose'] = pose.get_pose()
         if semantic_silhouette0 is not None:
             error_mask = (gt_semantic_map.sum(dim=0, keepdim=True) > 0) != (semantic_silhouette0.sum(dim=0, keepdim=True) > 0.5)
             error_mask = error_mask.repeat(3, 1, 1)
-            gripper_error_mask = (gt_semantic_map[2] > 0.5) != (semantic_silhouette0[2] > 0.5)
-            gripper_error_mask = gripper_error_mask.repeat(3, 1, 1)
-            
-            loss_rgb = l1_loss(image * (~gripper_error_mask) , gt_image * (~gripper_error_mask))
+            loss_rgb = l1_loss(image, gt_image)#l1_loss(image * (~error_mask) , gt_image * (~error_mask))
         else:
             loss_rgb = l1_loss(image, gt_image)
-       
         semantic_silhouette_sup = semantic_silhouette0 if semantic_silhouette0 is not None else semantic_silhouette
         loss_silhouette = l1_loss(semantic_silhouette, semantic_silhouette_sup)
-
-
-        loss = loss_rgb + loss_silhouette 
-        
-        if not testing:
-            (loss).backward()
-            instrument.step_optimizer()
-            instrument.zero_grad(set_to_none=True)
-            psnrs.append(psnr_val.mean().item())
-            losses.append(loss.item())
+        if depth0 is not None:
+            depth_loss = l1_loss(depth, depth0)
+            loss = loss_rgb + loss_silhouette #+ 0.1 * depth_loss
         else:
-            loss = torch.tensor([0.0], device="cuda")
-
+            loss = loss_rgb + loss_silhouette
+        # scale = instrument.get_scaling
+        # scale_ratio = scale.max(dim=-1)[0] / scale.min(dim=-1)[0]
+        # regularize the scale
+        # scale_loss = torch.mean(torch.relu(scale - 2))
+        # scale_ratio_loss = torch.mean(torch.relu(scale_ratio - 2))
+        # loss = loss +  0.1 * scale_ratio_loss
+        loss.backward()
+        instrument.step_optimizer()
+        instrument.zero_grad(set_to_none=True)
+        # instrument.update_alpha()
+        # instrument.prepare_scaling_rot()
+        with torch.no_grad():
+            psnr_val = psnr(image, gt_image)
     
     semantic_silhouette0 = semantic_silhouette.detach()
     depth0 = depth.detach()
-
-    # if image_name in log_dict.keys():
-    #         if 'psnrs' not in log_dict[image_name]:
-    #             log_dict[image_name]['psnrs'] = []
-    #         if 'losses' not in log_dict[image_name]:
-    #             log_dict[image_name]['losses'] = []
-    #         log_dict[image_name]['psnrs'].append(psnrs)
-    #         log_dict[image_name]['losses'].append(losses)
-    #         # save the log_dict to a npy file
-    #         np.save(f'Results/{task_name}/texture_learning_pose_log.npy', log_dict)
-    with torch.no_grad():
-        rot, trans, alpha, theta_l, theta_r = psnr_max_dict['pose']
-        # del psnr_max_dict['pose']
-        # del pose
-        psnr_max_dict['pose'] = None
-        psnr_val = psnr_max_dict['psnr']
-        pose_new = Pose(rot.clone(), trans.clone(), alpha.clone(), theta_l.clone(), theta_r.clone())
-    
-    return instrument, image, gt_image, psnr_val, semantic_silhouette0, depth0, pose_new
+    return instrument, image, gt_image, psnr_val, semantic_silhouette0, depth0
 # instrument.forward_kinematics(rot @ rotation_matrix_x(180), trans, -alpha, theta_r, theta_l, gs_grad=True, pose_grad = False)
 # render_pkg2 = render(viewpoint_cam, instrument, pipe, bg, 
-#                     override_camera_center=override_camera_center, render_semantics_silhouette=False)
+#                     override_camera_center=override_camera_center, render_semantics_silhouette=True)
 # semantic_silhouette = render_pkg2["render"].permute(2, 0, 1)
 # save_image(semantic_silhouette,'test1.png')
-def training(gs_type, dataset, opt, pipe, testing_iterations, checkpoint_iterations, exp_name):
+def training(gs_type, dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from, save_xyz):
     first_iter = 0
-    assert exp_name is not None, "Please provide a path to save the experiment results."
-    exp_path = os.path.join(dataset.exp_dir, exp_name)
-    # if os.path.exists(exp_path) == False:
-    #     os.makedirs(exp_path)
-    scene = InstrumentScene(dataset, gaussianModel[gs_type], dataset.sh_degree,
-                             pretrain_path = dataset.pretrain_path, pretrain_params='pretrain_3dgs_dense_param')
+    scene = InstrumentScene(dataset, gaussianModel[gs_type], dataset.sh_degree)
     instrument = scene.instrument
     instrument.training_setup(opt)
-
+    matcher_config = get_cfg_defaults()
+    matcher_config.merge_from_file('submodules/ml_aspanformer/configs/aspan/outdoor/aspan_test.py')
+    _config = lower_config(matcher_config)
+    matcher = ASpanFormer(config=_config['aspan'])
+    state_dict = torch.load('submodules/ml_aspanformer/weights/outdoor.ckpt', map_location='cpu')['state_dict']
+    matcher.load_state_dict(state_dict, strict=False)
+    matcher.cuda(), matcher.eval()
+    if checkpoint:
+        (model_params, first_iter) = torch.load(checkpoint)
+        instrument.restore(model_params, opt)
     white_background = True
     bg_color = [1, 1, 1] if white_background else [0, 0, 0]
     background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
 
+    # iter_start = torch.cuda.Event(enable_timing=True)
+    # iter_end = torch.cuda.Event(enable_timing=True)
     viewpoint_stack = None
     first_iter += 1
 
@@ -274,171 +328,148 @@ def training(gs_type, dataset, opt, pipe, testing_iterations, checkpoint_iterati
     # online mode to run the render and compare (global iterations) 
     # memory_pool = {}
     rot0, trans0, alpha0, theta_l0, theta_r0 = rot.detach().clone(), trans.detach().clone(), alpha.detach().clone(), theta_l.detach().clone(), theta_r.detach().clone()
-    # load memory pool
-    memory_pool_path = os.path.join(exp_path, f'memory_pool.pth')
-    memory_pool = torch.load(memory_pool_path) 
+    # perform tracking
     
+    memory_pool_list = ['memory_pool_3dgs_endovis2017', 'memory_pool_3dgs_endovis2017_keypoints',
+                        'memory_pool_mesh_endovis2017']
+    # load the memory pool
+    memory_pool_list = [torch.load(mp+'.pth')  for mp in memory_pool_list]
+    img_num = len(list(memory_pool_list[0].keys()))
     # texture learning
-    progress_bar = tqdm(range(first_iter, opt.texture_learning_iterations), desc="Texture Learning")
+    progress_bar = tqdm(range(first_iter, opt.texture_learning_iterations), desc="Tracking progress")
     named_iteration = 0
     name_iteration = False
     semantic_silhouette0, depth0 = None, None
     original_geometry_dict = {}
     
-    iterations = list(memory_pool.keys())
+    iterations = list(memory_pool_list[0].keys())
     final_memory_pool = {}
-
-    for iteration in iterations:
-        final_memory_pool[iteration] = memory_pool[iteration]
-    psnr_dict = {}
-    available_iterations = []
-    for iteration in iterations:
-        pose_info, dice = final_memory_pool[iteration]['pose_info'], final_memory_pool[iteration]['dice']
-        wrist_dice, shaft_dice, gripper_dice = dice
-        if iteration not in remove_cases  and wrist_dice > 0.8 and shaft_dice > 0.8:
-            available_iterations.append(iteration)
-    testing_iterations = random.sample(available_iterations, 12)
-    if os.path.exists(f"{scene.source_path}/testing_iterations.txt") == False:
-        with open(f"{scene.source_path}/testing_iterations.txt", "w") as f:
-            for item in testing_iterations:
-                f.write("%s\n" % item)
-    else:
-        testing_iterations = []
-        with open(f"{scene.source_path}/testing_iterations.txt", "r") as f:
-            lines = f.readlines()
-            for line in lines:
-                testing_iterations.append(int(line.strip()))
-    print("====Testing iterations==: ", testing_iterations)
-
     
-    if dataset.infer:
-        available_iterations = [it for it in available_iterations if it in testing_iterations]
-    else:
-        available_iterations = [it for it in available_iterations if it not in testing_iterations]
+    psnr_stacks = []
+    for j in iterations:
+        silhouette_dices = []
+        pose_infos = []
+        dices = []
+        for memory_pool in memory_pool_list:
+            pose_info, dice = memory_pool[j]['pose_info'], memory_pool[j]['dice']
+            dices.append(dice)
+            pose_infos.append(pose_info)
+            with torch.no_grad():
+                instrument.forward_kinematics(*pose_info.get_pose(), gs_grad=True, pose_grad = False)
+                transformation = torch.eye(4, device="cuda")
+                transformation[:3, :3] = rot
+                transformation[:3, 3] = trans
+                override_camera_center = torch.inverse(transformation)[:3, 3] * 1000
+                bg = torch.rand((3), device="cuda") if opt.random_background else background
+                render_pkg = render(viewpoint_cam, instrument, pipe, bg,
+                    override_camera_center=override_camera_center, render_semantics_silhouette=True)
+                semantic_silhouette = render_pkg["render"].permute(2, 0, 1)
+                wrist_mask = semantic_silhouette[1] > 0.5
+                shaft_mask = semantic_silhouette[0] > 0.5
+                gripper_mask = semantic_silhouette[2] > 0.5
+                semantic_silhouette = torch.cat([semantic_silhouette[0:1] * shaft_mask, semantic_silhouette[1:2] * wrist_mask, semantic_silhouette[2:3] * gripper_mask], dim=0)
+                silhouette = torch.sum(semantic_silhouette, dim=0)
+                gt_semantic_map = viewpoint_cam.original_semantic_mask.cuda()
+                gt_semantic_map = gt_semantic_map.permute(2, 0, 1)
+                gt_silhouette = torch.sum(gt_semantic_map, dim=0)
+                silhouette_dice = Dice(silhouette, gt_silhouette*1.)
+                silhouette_dices.append(silhouette_dice)
+        # Order the silhouette_dices and find the index with the highest silhouette dice
+        silhouette_dices = torch.tensor(silhouette_dices)
+        max_dice_idx = torch.argmax(silhouette_dices).item()
+        if silhouette_dices[max_dice_idx] - silhouette_dices[1] > 0 and  silhouette_dices[max_dice_idx] - silhouette_dices[1] < 0.03:
+            max_dice_idx = 1
+        final_memory_pool[j] = {'pose_info': pose_infos[max_dice_idx], 'dice': dices[max_dice_idx]}
 
-    total_iterations = opt.texture_learning_iterations if not dataset.infer \
-            else len(available_iterations)
-
-    for i in range(total_iterations):
+    psnr_dict = {}
+    for i in range(opt.texture_learning_iterations+1):
         if not name_iteration:
-            iteration = random.choice(available_iterations)
-            if iteration in remove_cases:
+            iteration = random.choice(iterations)
+            if iteration in remove_endovis_2017:
                 i = i -1
                 continue
         else:
             iteration = named_iteration
-        if dataset.infer:
-            iteration = available_iterations[i]
         
-
+        # Every 1000 its we increase the levels of SH up to a maximum degree
         if i % 400 == 0 and i < 10000:
             instrument.oneupSHdegree()
         viewpoint_cam = viewpoint_stack[iteration]
 
         pose_info, dice = final_memory_pool[iteration]['pose_info'], final_memory_pool[iteration]['dice']
         wrist_dice, shaft_dice, gripper_dice = dice  
-        testing = False if iteration not in testing_iterations else True
-        
-        
-        joint_state = pose_info.get_pose()
-        pose = Pose(*joint_state)
-        if (i+1) % 2000 == 0 and i < 10000:
-            instrument.update_learning_rate_texture_learning(i)
-        if iteration not in original_geometry_dict.keys():
-            semantic_silhouette0, depth0 = None, None
-            instrument, image, gt_image, psnr_val, semantic_silhouette0, depth0, _ = texture_learning(instrument, pose,
-                                viewpoint_cam, opt, pipe, background, i,semantic_silhouette0, depth0,testing)
-            original_geometry_dict[iteration] = (semantic_silhouette0, depth0)
-        else:
-            semantic_silhouette0, depth0 = original_geometry_dict[iteration]
-            
-            instrument, image, gt_image, psnr_val, _, _, _ = texture_learning(instrument, pose,
-                        viewpoint_cam, opt, pipe, background, i, semantic_silhouette0, depth0, testing)
-            
-            
-        updated_joint_state = pose.get_pose()
-        final_memory_pool[iteration]['pose_info'] = Pose(*updated_joint_state, init_optimizer=False)
-        
-        if i > 3000 and i % 10 == 0:
-            
-            if os.path.exists(os.path.join(exp_path, "texture_learning_visulization")) == False:
-                os.mkdir(os.path.join(exp_path, "texture_learning_visulization"))
-            # if testing and os.path.exists(os.path.join(exp_path, "texture_learning_visulization_test")) == False:
-            #     os.mkdir(os.path.join(exp_path, "texture_learning_visulization_test"))
-            vis = torch.cat([gt_image, image], dim=2)
-            vis = F.interpolate(vis.unsqueeze(0), scale_factor=0.5, mode="bilinear", align_corners=True).squeeze(0)
-            if testing:
-                save_image(vis, os.path.join(exp_path, "texture_learning_visulization_test", f"texture_learning_{iteration}.png"))
+        if wrist_dice > 0.86 and shaft_dice > 0.93:
+            joint_state = pose_info.get_pose()
+            pose = Pose(*joint_state)
+            if (i+1) % 2000 == 0 and i < 10000:
+                instrument.update_learning_rate_texture_learning(i)
+            if iteration not in original_geometry_dict.keys():
+                semantic_silhouette0, depth0 = None, None
+                instrument, image, gt_image, psnr_val, semantic_silhouette0, depth0 = joint_texture_learning(instrument, pose, viewpoint_cam, opt, pipe, background, i, semantic_silhouette0, depth0)
+                original_geometry_dict[iteration] = (semantic_silhouette0, depth0)
             else:
-                save_image(vis, os.path.join(exp_path, "texture_learning_visulization", f"texture_learning_{iteration}.png"))
+                semantic_silhouette0, depth0 = original_geometry_dict[iteration]
+                instrument, image, gt_image, psnr_val, _, _ = joint_texture_learning(instrument, pose, viewpoint_cam, opt, pipe, background, i, semantic_silhouette0, depth0)
 
-        with torch.no_grad():
-            if i % 10 == 0 or i == 1:
-                if os.path.exists(os.path.join(exp_path, "text_learning")) == False:
-                    os.mkdir(os.path.join(exp_path, "text_learning"))
-                if testing:
-                    if os.path.exists(os.path.join(exp_path, "text_learning_test")) == False:
-                        os.mkdir(os.path.join(exp_path, "text_learning_test"))
-                    save_image(image, os.path.join(exp_path, "text_learning_test", f"img{iteration}.png"))
-                else:
-                    save_image(image, os.path.join(exp_path, "text_learning", f"img{iteration}.png"))
-            if isinstance(psnr_val, float):
-                ema_loss_for_log = psnr_val
-            else:
+            updated_joint_state = pose.get_pose()
+            final_memory_pool[iteration]['pose_info'] = Pose(*updated_joint_state, init_optimizer=False)
+            if i > 19000:
+                if os.path.exists("texture_learning_visulization_joint") == False:
+                    os.mkdir("texture_learning_visulization")
+                vis = torch.cat([gt_image, image], dim=2)
+                vis = F.interpolate(vis.unsqueeze(0), scale_factor=0.5, mode="bilinear", align_corners=True).squeeze(0)
+                save_image(vis, f"texture_learning_visulization_joint/texture_learning_{iteration}.png")
+
+            with torch.no_grad():
+                if i % 1 == 0 or i == 1:
+                    if os.path.exists("text_learning_joint") == False:
+                        os.mkdir("text_learning_joint")
+                    save_image(image, f"text_learning_joint/img{iteration}.png")
                 ema_loss_for_log = psnr_val.mean().item()
-            psnr_dict[iteration] = ema_loss_for_log
-            if i % 10 == 0:
-                progress_bar.set_postfix({"Texture Learning PSNR": f"{ema_loss_for_log:.{3}f}"})
-                progress_bar.update(10)
-            if (i in checkpoint_iterations):
-                # calculate the mean error
-                print("\n[ITER {}] Saving Gaussians".format(iteration))
-                for part_name, part in instrument.part_dict.items():
-                    gs_model = part.gaussian_model
-                    checkpoint = {
-                        'opacity': gs_model._opacity,
-                        'alpha': gs_model._alpha,
-                        "xyz": gs_model._xyz,
-                        'vertices': gs_model.vertices,
-                        'rotation': gs_model._rotation,
-                        'scale': gs_model._scale,
-                        'scaling': gs_model._scaling,
-                        'features_dc': gs_model._features_dc,
-                        'features_rest': gs_model._features_rest
-                    }
-                    # torch.save(checkpoint, scene.source_path + "/" + str(part_name)+"_trained_3dgs_onethird_param" + str(i) + ".pth")
-                    torch.save(checkpoint, os.path.join(exp_path, str(part_name)+"_trained_3dgs_param" + str(i) + ".pth"))
-                    
+                psnr_dict[iteration] = ema_loss_for_log
+                if i % 10 == 0:
+                    progress_bar.set_postfix({"Texture Learning PSNR": f"{ema_loss_for_log:.{3}f}"})
+                    progress_bar.update(10)
      
             
 if __name__ == "__main__":
     parser = ArgumentParser(description="Training script parameters")
-    parser.add_argument('--gs_type', type=str, default="gs_instrument")
+    parser.add_argument('--ip', type=str, default="127.0.0.1")
+    parser.add_argument('--port', type=int, default=6009)
+    parser.add_argument('--gs_type', type=str, default="gs_mesh")
     parser.add_argument("--num_splats", nargs="+", type=int, default=[2])
+    parser.add_argument("--meshes", nargs="+", type=str, default=[])
+    parser.add_argument('--debug_from', type=int, default=-1)
+    parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_iterations", nargs="+", type=int, default=[7_000, 20_000, 30_000, 60_000, 90_000])
     parser.add_argument("--save_iterations", nargs="+", type=int, default=[7_000, 20_000, 30_000, 60_000, 90_000])
     parser.add_argument("--quiet", action="store_true")
-    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[7_000, 20_000, 30_000, 60_000, 90_000])
-    parser.add_argument("--exp_name", type = str, default="exp1")
-    parser.add_argument("--infer", default=False, action="store_true")
+    parser.add_argument("--checkpoint_iterations", nargs="+", type=int, default=[])
+    parser.add_argument("--start_checkpoint", type=str, default=None)
+    parser.add_argument("--save_xyz", action='store_true')
 
     lp = ModelParams(parser)
     args, _ = parser.parse_known_args(sys.argv[1:])
+    lp.num_splats = args.num_splats
+    lp.meshes = args.meshes
     lp.gs_type = args.gs_type
-    lp.infer = args.infer
 
     op = optimizationParamTypeCallbacks[args.gs_type](parser)
     pp = PipelineParams(parser)
     args = parser.parse_args(sys.argv[1:])
 
+    args.save_iterations.append(args.iterations)
 
     print("torch cuda: ", torch.cuda.is_available())
     print("Optimizing " + args.model_path)
     safe_state(args.quiet)
+
+    torch.autograd.set_detect_anomaly(args.detect_anomaly)
     training(
         args.gs_type,
         lp.extract(args), op.extract(args), pp.extract(args),
-        args.test_iterations, args.checkpoint_iterations,args.exp_name
+        args.test_iterations, args.save_iterations, args.checkpoint_iterations,
+        args.start_checkpoint, args.debug_from, args.save_xyz
     )
 
     print("\nTraining complete.")

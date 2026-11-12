@@ -9,7 +9,7 @@
 # For inquiries contact  george.drettakis@inria.fr
 #
 
-from instrument_splatting.scene.cameras import Camera
+from scene.cameras import Camera
 import numpy as np
 from utils.general_utils import PILtoTorch
 from utils.graphics_utils import fov2focal
@@ -19,6 +19,7 @@ WARNED = False
 def loadCam(args, id, cam_info, resolution_scale):
     orig_w, orig_h = cam_info.image.size
     semantic_mask = cam_info.semantic_mask
+    overall_mask = cam_info.overall_mask
 
     if args.resolution in [1, 2, 4, 8]:
         resolution = round(orig_w/(resolution_scale * args.resolution)), round(orig_h/(resolution_scale * args.resolution))
@@ -49,15 +50,25 @@ def loadCam(args, id, cam_info, resolution_scale):
 
     return Camera(colmap_id=cam_info.uid, R=cam_info.R, T=cam_info.T, 
                   FoVx=None, FoVy=None, K = cam_info.K,
-                  image=gt_image ,gt_alpha_mask=loaded_mask, semantic_mask = semantic_mask,
+                  image=gt_image ,gt_alpha_mask=loaded_mask, semantic_mask = semantic_mask, overall_mask = overall_mask,
                   image_name=cam_info.image_name, uid=id, data_device=args.data_device,
                   keypoints_2d = cam_info.keypoints_2d)
 
 def cameraList_from_camInfos(cam_infos, resolution_scale, args):
     camera_list = []
-
-    for id, c in enumerate(cam_infos):
-        camera_list.append(loadCam(args, id, c, resolution_scale))
+    if len(cam_infos) == 2 :
+        cam_infos_forward = cam_infos[0]
+        cam_infos_backward = cam_infos[1]
+        camera_list_forward = []
+        camera_list_backward = []
+        for id, c in enumerate(cam_infos_forward):
+            camera_list_forward.append(loadCam(args, id, c, resolution_scale))
+        for id, c in enumerate(cam_infos_backward):
+            camera_list_backward.append(loadCam(args, id + len(cam_infos_forward), c, resolution_scale))
+        camera_list = [camera_list_forward, camera_list_backward]
+    else:
+        for id, c in enumerate(cam_infos):
+            camera_list.append(loadCam(args, id, c, resolution_scale))
 
     return camera_list
 

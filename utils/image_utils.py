@@ -17,10 +17,21 @@ from PIL import Image
 def mse(img1, img2):
     return (((img1 - img2)) ** 2).view(img1.shape[0], -1).mean(1, keepdim=True)
 
-def psnr(img1, img2):
-    mse = (((img1 - img2)) ** 2).view(img1.shape[0], -1).mean(1, keepdim=True)
-    return 20 * torch.log10(1.0 / torch.sqrt(mse))
+# def psnr(img1, img2):
+#     mse = (((img1 - img2)) ** 2).view(img1.shape[0], -1).mean(1, keepdim=True)
+#     return 20 * torch.log10(1.0 / torch.sqrt(mse))
 
+@torch.no_grad()
+def psnr(img1, img2, mask=None):
+    if mask is None:
+        mse_mask = (((img1 - img2)) ** 2).view(img1.shape[0], -1).mean(1, keepdim=True)
+    else:
+        if mask.shape[1] == 3:
+            mse_mask = (((img1-img2)**2)*mask).sum() / ((mask.sum()+1e-10))
+        else:
+            mse_mask = (((img1-img2)**2)*mask).sum() / ((mask.sum()+1e-10)*3.0)
+
+    return 20 * torch.log10(1.0 / torch.sqrt(mse_mask))
 def load_viewcam_from_npz(npz_path, obj2world = None, device='cuda'):
   
     T0 = torch.eye(4)
@@ -52,9 +63,7 @@ def load_viewcam_from_npz(npz_path, obj2world = None, device='cuda'):
     obj2cam = w2c @ obj_pose
     return img, depth, mask, obj2cam, cam_K 
 
-# mesh_render_path = '/mnt/iMVR/shuojue/data/instrument_dataset_LND/wrist_mesh_render'
 # npz_files = sorted([f for f in os.listdir(mesh_render_path) if f.endswith('.npz')])
 # for npz_file in npz_files:
 #     npz_path = os.path.join(mesh_render_path, npz_file)
 #     load_viewcam_from_npz(npz_path, 'cuda')
-    

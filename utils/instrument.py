@@ -3,7 +3,7 @@ import  numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import torch
-# from instrument_splatting.utils.graphics_utils import MeshPointCloud
+# from games.mesh_splatting.utils.graphics_utils import MeshPointCloud
 from pathlib import Path
 from plyfile import PlyData, PlyElement
 from utils.sh_utils import SH2RGB
@@ -12,8 +12,8 @@ os.environ["PYOPENGL_PLATFORM"] = "egl"
 from utils.part import Part
 import pyrender
 import cv2
-# from instrument_splatting.scene.dataset_readers import InstrumentSceneInfo
-# from instrument_splatting.scene.gaussian_mesh_model_3dgs import GaussianMeshModel
+# from scene.dataset_readers import InstrumentSceneInfo
+# from games.mesh_splatting.scene.gaussian_mesh_model_3dgs import GaussianMeshModel
 
 
 def random_point(mesh, num_points=1000):
@@ -48,7 +48,7 @@ class gaussian_attr(object):
         Convert a rotation matrix to a quaternion.
         The quaternion will be in the form [w, x, y, z] where w is the real part.
         """
-        
+
         trace = m[0, 0] + m[1, 1] + m[2, 2]
 
         if trace > 0:
@@ -130,6 +130,7 @@ class Instrument(object):
 
     def _preComputeTransform(self):
         # convert TriMesh coordinate system to Blender coordinate system
+        # basis: i.e., trimesh
         bias2world = torch.eye(4)
         bias2world[:3, :3] = torch.tensor([[1, 0, 0], [0, 0, 1], [0, -1, 0]]).T
         self.bias2world = bias2world
@@ -175,19 +176,17 @@ class Instrument(object):
         num_pts_per_triangle (int): The number of points to sample per triangle.
         """
         for part_name, part in self.part_dict.items():
-            # In the stage I (geometry pretraining), we used ray tracing to get better surface points.
             surf_point_file =  os.path.join(ply_root, f'{part_name}_ray_tracing.npz')
-            # part.create_meshpoint_cloud(num_pts_per_triangle,  os.path.join(ply_root, f'{part_name}_points3d.ply'))
-            
+            part.create_meshpoint_cloud(num_pts_per_triangle,  os.path.join(ply_root, f'{part_name}_points3d.ply'))
+            # continue
             if os.path.exists(surf_point_file):
                 npz = np.load(surf_point_file)
                 surf_face_idxes = torch.from_numpy(npz['surf_face_idxes'])
                 surf_alphas = torch.from_numpy(npz['surf_alpha'])
                 surf_vertices = torch.from_numpy(npz['surf_vertices'])
+
                 part.create_meshpoint_cloud_with_ray_tracing(surf_face_idxes, surf_alphas, surf_vertices,  os.path.join(ply_root, f'{part_name}_points3d.ply'))
             else:
-                # use mesh surface points only to initialize the mesh point cloud. Due to inferior quality, this is not used in our final experiments.
-                raise NotImplementedError(f"In this work we didn't use Mesh to initialize GS. Creating meshpoint cloud requires num_pts_per_triangle to be specified!")
                 part.create_meshpoint_cloud(num_pts_per_triangle,  os.path.join(ply_root, f'{part_name}_points3d.ply'))
 
     def training_setup(self, opt):
@@ -201,8 +200,10 @@ class Instrument(object):
         for i,(part_name, part) in enumerate(self.part_dict.items()):
              # if i > 0: continue
             part.gaussian_model.optimizer.step()
-    def zero_grad(self, set_to_none = False):
+    def zero_grad(self, set_to_none = False, skip_parts = []):
         for i,(part_name, part) in enumerate(self.part_dict.items()):
+            if part_name in skip_parts:
+                continue
              # if i > 0: continue
             part.gaussian_model.optimizer.zero_grad(set_to_none)
     @property
@@ -214,7 +215,6 @@ class Instrument(object):
         return torch.cat(points, dim=0) 
     
     def get_keypoints(self):
-        # return the keypoints under canonical space w.r.t. the part coordinate frames
         keypoints = []
         keypoints.append(self.part_dict['shaft'].keypoints)#render_params['keypoints'])
         keypoints.append(self.part_dict['wrist'].keypoints)#render_params['keypoints'])
@@ -375,38 +375,64 @@ class Instrument(object):
         wrist2camera_transformation[:3, :3] = rot_wrist2camera
         wrist2camera_transformation[:3, 3] = trans_wrist2camera
 
-        # wrist transformation
-        rot_wrist = self._rodrigues_rotation_matrix(torch.tensor([0, 1, 0], device="cuda"), alpha)
-        
-        wrist2shaft_transformation = torch.eye(4).cuda()
-        wrist2shaft_transformation[:3, :3] = rot_wrist
-        wrist2shaft_transformation[:3, 3] = torch.tensor([0.2159, 0, 0], device='cuda')
-        shaft2camera_transformation = wrist2camera_transformation @ torch.inverse(wrist2shaft_transformation)
+        # rotation axis (screw axis) for lateral rotation: rotate around the axis perpendicular to the shaft and the camera view direction
+        rotation_axis = torch.tensor([torch.cos(-alpha), 0, -torch.sin(-alpha)])
+        rotation_axis = rotation_axis.to(rot_wrist2camera.device)
+        rotation_axis_cam = rot_wrist2camera @ rotation_axis
+        point_axis_cam = wrist2camera_transformation[:3, 3] + rot_wrist2camera\
+             @ torch.tensor([0., 0, 0],device=wrist2camera_transformation.device) # the point on the rotation axis in camera coordinate system
 
-        # generate shaft lateral rotation
-        lateral_shaft_transformation = torch.eye(4).cuda()
-        lateral_shaft_transformation[:3, :3] = self._rodrigues_rotation_matrix(torch.tensor([1, 0, 0], device='cuda'), rot_angle.unsqueeze(0))
-        
-        wrist2camera_transformation = (shaft2camera_transformation @ lateral_shaft_transformation) @ wrist2shaft_transformation
+        # Build screw transformation in camera space (pure rotation around axis through point_axis_cam):
+        #   T_screw[:3,:3] = R
+        #   T_screw[:3, 3] = point - R @ point  (shift so the axis point stays fixed)
+        R = self._rodrigues_rotation_matrix(rotation_axis_cam.float(), rot_angle.unsqueeze(0))
+        T_screw = torch.eye(4)
+        T_screw[:3, :3] = R
+        T_screw[:3, 3] = point_axis_cam - R @ point_axis_cam
 
-        return wrist2camera_transformation[:3,:3]
+        # Apply screw to current wrist frame in camera space
+        new_wrist2camera = T_screw.to(wrist2camera_transformation.device) @ wrist2camera_transformation
+        #         # construct transformation that rotate wrist frame around the rotation axis by rot_angle under camera coordinate system, and then transform back to wrist frame
+
+
+
+        # # wrist transformation
+        # rot_wrist = self._rodrigues_rotation_matrix(torch.tensor([0, 1, 0], device="cuda"), alpha)
+
+        # wrist2shaft_transformation = torch.eye(4).cuda()
+        # wrist2shaft_transformation[:3, :3] = rot_wrist
+        # wrist2shaft_transformation[:3, 3] = torch.tensor([0.2159, 0, 0], device='cuda')
+        # shaft2camera_transformation = wrist2camera_transformation @ torch.inverse(wrist2shaft_transformation)
+
+        # # generate shaft lateral rotation
+        # lateral_shaft_transformation = torch.eye(4).cuda()
+        # lateral_shaft_transformation[:3, :3] = self._rodrigues_rotation_matrix(torch.tensor([1, 0, 0], device='cuda'), rot_angle.unsqueeze(0))
+        
+        # wrist2camera_transformation = (shaft2camera_transformation @ lateral_shaft_transformation) @ wrist2shaft_transformation
+
+        return new_wrist2camera
     
     def forward_kinematics(self, rot_wrist2camera=torch.eye(3), trans_wrist2camera=torch.zeros(3),
                             alpha=torch.tensor(0), theta_l=torch.tensor(0), theta_r=torch.tensor(0),
-                            gs_grad = False, pose_grad = True, with_mesh = False):
+                            gs_grad = False, pose_grad = True, with_mesh = False, device = None):
        
         self.with_mesh = with_mesh
        # wrist to camera transformation (initialized)
-        wrist2camera_transformation = torch.eye(4).cuda()
+        if device is not None:
+        #    rot_wrist2camera = rot_wrist2camera.to(device)
+           wrist2camera_transformation = torch.eye(4).to(device)
+        else:
+            wrist2camera_transformation = torch.eye(4).cuda()
         wrist2camera_transformation[:3, :3] = rot_wrist2camera
         wrist2camera_transformation[:3, 3] = trans_wrist2camera
 
         # wrist transformation
-        rot_wrist = self._rodrigues_rotation_matrix(torch.tensor([0, 1, 0], device="cuda"), alpha)
+        rot_wrist = self._rodrigues_rotation_matrix(torch.tensor([0, 1, 0], device=device if device is not None else "cuda"), alpha)
         self.rot_wrist = rot_wrist
-        wrist2shaft_transformation = torch.eye(4).cuda()
+        
+        wrist2shaft_transformation = torch.eye(4).to(device if device is not None else "cuda")
         wrist2shaft_transformation[:3, :3] = rot_wrist
-        wrist2shaft_transformation[:3, 3] = torch.tensor([0.2159, 0, 0], device='cuda')
+        wrist2shaft_transformation[:3, 3] = torch.tensor([0.2159, 0, 0], device=device if device is not None else "cuda")
         shaft2camera_transformation = wrist2camera_transformation @ torch.inverse(wrist2shaft_transformation)
 
         # shaft transformation
@@ -415,13 +441,13 @@ class Instrument(object):
         wrist_transformation = wrist2shaft_transformation
         
         # left gripper transformation
-        l_gripper_transformation = torch.eye(4).cuda()
-        l_gripper_transformation[:3, :3] = self._rodrigues_rotation_matrix(torch.tensor([0, 0, 1], device='cuda'), theta_l)
-        l_gripper_transformation[:3, 3] = torch.tensor([0.009, 0, 0])
+        l_gripper_transformation = torch.eye(4).to(device if device is not None else "cuda")
+        l_gripper_transformation[:3, :3] = self._rodrigues_rotation_matrix(torch.tensor([0, 0, 1], device=device if device is not None else "cuda"), theta_l)
+        l_gripper_transformation[:3, 3] = torch.tensor([0.009, 0, 0], device=device if device is not None else "cuda")
         # right gripper transformation
-        r_gripper_transformation = torch.eye(4).cuda()
-        r_gripper_transformation[:3, :3] = self._rodrigues_rotation_matrix(torch.tensor([0, 0, 1], device='cuda'), -theta_r)
-        r_gripper_transformation[:3, 3] = torch.tensor([0.009, 0, 0])
+        r_gripper_transformation = torch.eye(4).to(device if device is not None else "cuda")
+        r_gripper_transformation[:3, :3] = self._rodrigues_rotation_matrix(torch.tensor([0, 0, 1], device=device if device is not None else "cuda"), -theta_r)
+        r_gripper_transformation[:3, 3] = torch.tensor([0.009, 0, 0], device=device if device is not None else "cuda")
         # apply the transformation
         self._apply_transformation('shaft', shaft_transformation, gs_grad, pose_grad)
         self.shaft_transformation = shaft_transformation
@@ -432,7 +458,7 @@ class Instrument(object):
         self.r_gripper_transformation = self.wrist_transform @ r_gripper_transformation
         self._apply_transformation('r_gripper', self.r_gripper_transformation, gs_grad, pose_grad)
 
-    def render_trimesh(self,K):
+    def render_trimesh(self,K, size = None):
         # render the trimesh
         mesh_list = []
         for part_name, mesh in self.new_mesh_dict.items():
@@ -473,12 +499,14 @@ class Instrument(object):
         pyrender_scene.add(light, pose=light_pose)
 
         # Render the scene
-        renderer = pyrender.OffscreenRenderer(viewport_width=640, viewport_height=512)
+        width = 640 if size is None else size[1]
+        height = 512 if size is None else size[0]
+        renderer = pyrender.OffscreenRenderer(viewport_width=width, viewport_height=height)
         color, depth = renderer.render(pyrender_scene)
 
         # Save the image
         # cv2.imwrite('rendered_image.png', cv2.cvtColor(color, cv2.COLOR_RGB2BGR))
-        return color, depth
+        return color, depth, combined_mesh
 
         
 

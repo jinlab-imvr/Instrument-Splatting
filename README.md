@@ -1,4 +1,4 @@
-# Instrument-Splatting: Controllable Photorealistic Reconstruction of Surgical Instruments Using Gaussian Splatting
+# Instrument-Splatting++
 
 Official code implementation for [Instrument-Splatting](https://arxiv.org/abs/2503.04082), a Real2Sim framework for controllable and photorealistic surgical instrument reconstruction.
 
@@ -19,8 +19,8 @@ https://github.com/user-attachments/assets/c5a1e684-b998-489b-960c-9d7717bfd65b
 Tested with NVIDIA RTX A5000 GPU.
 
 ```bash
-# Clone the repository with submodules
-git clone --recursive https://github.com/jinlab-imvr/Instrument-Splatting.git
+# Clone the Instrument-Splatting++ branch with submodules
+git clone --recursive --branch 'instrument-splatting++' https://github.com/jinlab-imvr/Instrument-Splatting.git
 cd Instrument-Splatting
 
 # If you already cloned without --recursive, initialize submodules
@@ -79,13 +79,13 @@ We have uploaded our pretrained GS models to `pretrained_models`. Now we have re
 To estimate per-frame instrument poses, run the following example command:
 
 ```
-python pose_tracking.py --source_path data/surgpose_sample --exp_name exp1
+python pose_tracking_tipNet.py --source_path data/surgpose_sample --task_name exp1
 ```
 
 ### Texture Learning
 To learn the instrument appearances, run the following example command:
 ```
-python texture_learning.py --source_path data/surgpose_sample --exp_name exp1
+python texture_learning.py --source_path data/surgpose_sample
 ```
 
 ## Evaluation

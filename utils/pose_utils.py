@@ -65,6 +65,8 @@ def solve_pnp_ransac(object_points, image_points, camera_matrix, dist_coeffs=Non
             dist_coeffs = dist_coeffs.cpu().numpy()
 
         # Solve PnP using RANSAC
+        if len(object_points) > len(image_points):
+            object_points = object_points[:len(image_points)]
         success, rvec, tvec, inliers = cv2.solvePnPRansac(object_points, image_points, camera_matrix, dist_coeffs, reprojectionError=reprojection_error, confidence=confidence, iterationsCount=iterations_count)
 
         if not success:

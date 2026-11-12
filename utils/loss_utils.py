@@ -23,7 +23,11 @@ def huber_loss(network_output, gt, delta=1.0):
     return loss.mean()
 def l1_loss(network_output, gt):
     return torch.abs((network_output - gt)).mean()
-
+def l1_loss_mask(network_output, gt, mask):
+    if mask.shape[0] == 3:
+        mask = (mask[0] + mask[1] + mask[2]) > 0.5
+        mask = mask.float()[None]
+    return torch.abs((network_output - gt) * mask).mean()
 def l1_loss_normalization(network_output, gt):
     # normalize the network output and ground truth
     network_output = network_output / network_output.max()
@@ -95,3 +99,8 @@ def instrument_dice(input, target):
     gripper_gt = target[2] == 1
     gripper_dice = dice(gripper_pred, gripper_gt)
     return wrist_dice, shaft_dice, gripper_dice
+
+def instrument_overall_dice(input, target):
+    input_mask = (input[:3] > 0.5).any(dim=0)
+    target_mask = (target[:3] > 0.5).any(dim=0)
+    return dice(input_mask, target_mask)

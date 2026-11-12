@@ -12,10 +12,11 @@
 import torch
 import math
 from diff_gaussian_rasterization import GaussianRasterizationSettings, GaussianRasterizer
-from instrument_splatting.scene.gaussian_model import GaussianModel
+from scene.gaussian_model import GaussianModel
 from utils.sh_utils import eval_sh
 import trimesh
 from utils.instrument import Instrument
+from scene.cameras import Camera
 
 def transform_vertices_function(vertices, c=1):
     vertices = vertices[:, [0, 2, 1]]
@@ -560,3 +561,165 @@ def render_with_instrument_v2(viewpoint_camera, instrument: Instrument, pipe, bg
             "opacity": alpha.squeeze(0),}
             # "semantics": rendered_semantics}
 
+def render_with_instrument_v4(viewpoint_camera: dict, instrument: Instrument, bg_color : torch.Tensor, scaling_modifier = 1.0,
+                           override_color = None, override_camera_center = None, active_sh_degree = None,
+                           render_semantics_silhouette = False, debug=False, mask_x_axis = None):
+    """
+    Render the scene.
+
+    Background tensor (bg_color) must be on GPU!
+    """
+    # gaussian_dict = instrument.get_gaussian_models()
+    # gaussian_list = list(gaussian_dict.values())
+
+
+    # Create zero tensor. We will use it to make pytorch return gradients of the 2D (screen-space) means
+    render_params = instrument.get_render_params()
+    _xyz = render_params['xyz'] * 1000
+
+    if active_sh_degree is None:
+        active_sh_degree = instrument.active_sh_degree
+
+
+    screenspace_points = torch.zeros_like(_xyz, dtype=_xyz.dtype, requires_grad=True, device="cuda") + 0
+    try:
+        screenspace_points.retain_grad()
+    except:
+        pass
+    if isinstance(viewpoint_camera, Camera):
+        viewpoint_camera = {"FoVx": viewpoint_camera.FoVx, "FoVy": viewpoint_camera.FoVy, "camera_center": viewpoint_camera.camera_center,
+                           "image_height": viewpoint_camera.image_height, "image_width": viewpoint_camera.image_width,
+                           "world_view_transform": viewpoint_camera.world_view_transform, "full_proj_transform": viewpoint_camera.full_proj_transform}
+    # Set up rasterization configuration
+    tanfovx = math.tan(viewpoint_camera["FoVx"] * 0.5)
+    tanfovy = math.tan(viewpoint_camera["FoVy"] * 0.5)
+    if override_camera_center is not None:
+        camera_center = override_camera_center
+    else:
+        camera_center = viewpoint_camera["camera_center"]
+    raster_settings = GaussianRasterizationSettings(
+        image_height=int(viewpoint_camera["image_height"]),
+        image_width=int(viewpoint_camera["image_width"]),
+        tanfovx=tanfovx,
+        tanfovy=tanfovy,
+        bg=bg_color,
+        scale_modifier=scaling_modifier,
+        viewmatrix=viewpoint_camera["world_view_transform"],
+        projmatrix=viewpoint_camera["full_proj_transform"],
+        sh_degree=active_sh_degree,
+        campos= torch.tensor([0,0,0],dtype=torch.float32,device='cuda'), #viewpoint_camera.camera_center,
+        prefiltered=False,
+        debug=debug
+    )
+
+    rasterizer = GaussianRasterizer(raster_settings=raster_settings)
+    with torch.no_grad():
+        if mask_x_axis is not None:
+            shaft_mask = instrument.part_dict['shaft'].gaussian_model.get_xyz[:, 0] >  instrument.part_dict['shaft'].gaussian_model.get_xyz[:, 0].max() - mask_x_axis
+            mask = torch.cat([shaft_mask, torch.ones(instrument.get_xyz.shape[0] - instrument.part_dict['shaft'].gaussian_model.get_xyz.shape[0], dtype=torch.bool, device='cuda')], dim=0)
+
+            # mask = instrument.get_xyz[:, 0] > mask_x_axis
+        else:
+            mask = torch.ones_like(instrument.get_xyz[:, 0], dtype=torch.bool, device='cuda')
+
+    mask = mask.detach()
+    means3D = _xyz[mask]
+    means2D = screenspace_points[mask]
+    opacity = render_params['opacity'][mask]
+    features = render_params['feature'][mask]
+    # If precomputed 3d covariance is provided, use it. If not, then it will be computed from
+    # scaling / rotation by the rasterizer.
+
+    scales = render_params['scale'][mask]
+    rotations = render_params['rotation'][mask]
+
+
+    if render_semantics_silhouette:
+        # depth_silhouette = get_depth_and_silhouette(means3D, viewpoint_camera.world_view_transform.T)
+        # Rasterize visible Gaussians to image, obtain their radii (on screen).
+        if isinstance(instrument, Instrument):
+            semantics = instrument.get_semantics
+        else:
+            semantics = torch.ones_like(instrument.get_xyz, dtype=torch.float32, device='cuda')
+
+        rendered_image, radii, depth, alpha = rasterizer(
+            means3D = means3D,
+            means2D = means2D,
+            colors_precomp = semantics,
+            opacities = opacity,
+            scales = scales ,
+            rotations = rotations,
+            cov3D_precomp = None
+            )
+
+        rendered_image = rendered_image.permute(1, 2, 0)
+        depth = depth.squeeze(0)
+        # spotlight light source model
+        # rendered_image = viewpoint_camera.spotlight_render(rendered_image, depth.detach())
+        # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
+        # They will be excluded from value updates used in the splitting criteria.
+        return {"render": rendered_image,
+                "viewspace_points": screenspace_points,
+                "visibility_filter" : radii > 0,
+                "radii": radii,
+                "depth":depth,
+                "opacity": alpha.squeeze(0)}
+    # If precomputed colors are provided, use them. Otherwise, if it is desired to precompute colors
+    # from SHs in Python, do it. If not, then SH -> RGB conversion will be done by rasterizer.
+    shs = None
+    colors_precomp = None
+    shs_view = features.transpose(1, 2).view(-1, 3, (instrument.shaft.gaussian_model.max_sh_degree+1)**2)
+    feature_rc = shs_view[:, :3, 1:]
+    dense_features = [feature_rc[...,0], feature_rc[...,1], feature_rc[...,2], feature_rc[...,3]]
+    sigmoid = torch.nn.Sigmoid()
+    # dense_features = [sigmoid(f) for f in dense_features]
+    render_features = []
+    for i, dense_feat in enumerate(dense_features):
+        colors_precomp = dense_feat
+        rendered_image, radii, depth, alpha = rasterizer(
+            means3D = means3D,
+            means2D = means2D,
+            colors_precomp = colors_precomp,
+            opacities = opacity,
+            scales = scales ,
+            rotations = rotations,
+            cov3D_precomp = None
+            )
+        render_features.append(rendered_image.permute(1, 2, 0))
+    rendered_features = torch.cat(render_features, dim=-1)
+    depth = depth.squeeze(0)
+    # if override_color is None:
+    #     if True: # pipe.convert_SHs_python:
+    #         shs_view = features.transpose(1, 2).view(-1, 3, (instrument.shaft.gaussian_model.max_sh_degree+1)**2)
+    #         dir_pp = (_xyz - camera_center.repeat(features.shape[0], 1).cuda())
+    #         dir_pp_normalized = dir_pp/dir_pp.norm(dim=1, keepdim=True)
+    #         sh2rgb = eval_sh(active_sh_degree, shs_view, dir_pp_normalized)
+    #         colors_precomp = torch.clamp_min(sh2rgb + 0.5, 0.0)
+    #     else:
+    #         shs = instrument.get_features
+    # else:
+    #     colors_precomp = override_color
+
+    # # Rasterize visible Gaussians to image, obtain their radii (on screen).
+    # rendered_image, radii, depth, alpha = rasterizer(
+    #         means3D = means3D,
+    #         means2D = means2D,
+    #         colors_precomp = colors_precomp,
+    #         opacities = opacity,
+    #         scales = scales ,
+    #         rotations = rotations,
+    #         cov3D_precomp = None
+    #         )
+
+    rendered_image = rendered_image.permute(1, 2, 0)
+    depth = depth.squeeze(0)
+    # spotlight light source model
+    # rendered_image = viewpoint_camera.spotlight_render(rendered_image, depth.detach())
+    # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
+    # They will be excluded from value updates used in the splitting criteria.
+    return {"render": rendered_features,
+            "viewspace_points": screenspace_points,
+            "visibility_filter" : radii > 0,
+            "radii": radii,
+            "depth":depth,
+            "opacity": alpha.squeeze(0)}
