@@ -12,9 +12,7 @@ Official code implementation for [Instrument-Splatting](https://arxiv.org/abs/25
 
 ### MIA_demp
 
-![MIA_demp](media/MIA_demp_preview.webp)
-
-[Open the full-resolution video](media/MIA_demp.mp4)
+https://github.com/user-attachments/assets/97af5e67-2ef4-44e6-87f2-133c73ccf6b3
 
 ## Environment setup
 
