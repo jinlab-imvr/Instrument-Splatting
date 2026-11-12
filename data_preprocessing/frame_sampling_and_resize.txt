@@ -1,0 +1,28 @@
+SAR-RARP50 FIRST-100-FRAME MANIFEST
+====================================
+
+Preprocessing
+-------------
+Temporal downsampling factor: 2 (the first clip frame is retained).
+Input resolution: 1920 x 1080 pixels (width x height).
+Output resolution: 640 x 352 pixels (width x height).
+Resize operation: cv2.resize(frame, (640, 352)), using OpenCV's default
+linear interpolation without cropping or padding.
+
+Frame-ID convention
+-------------------
+retained_frame_ids are the original source-video frame IDs. This public subset
+contains only the first 100 retained IDs in temporal order.
+
+video_sequence_id: SARRARP502022_needleGrasping_166_video15
+video_id: 15
+retained_frame_ids (100):
+  3312, 3314, 3316, 3318, 3320, 3322, 3324, 3326, 3328, 3330, 3332, 3334,
+  3336, 3338, 3340, 3342, 3344, 3346, 3348, 3350, 3352, 3354, 3356, 3358,
+  3360, 3362, 3364, 3366, 3368, 3370, 3372, 3374, 3376, 3378, 3380, 3382,
+  3384, 3386, 3388, 3390, 3392, 3394, 3396, 3398, 3400, 3402, 3404, 3406,
+  3408, 3410, 3412, 3414, 3416, 3418, 3420, 3422, 3424, 3426, 3428, 3430,
+  3432, 3434, 3436, 3438, 3440, 3442, 3444, 3446, 3448, 3450, 3452, 3454,
+  3456, 3458, 3460, 3462, 3464, 3466, 3468, 3470, 3472, 3474, 3476, 3478,
+  3480, 3482, 3484, 3486, 3488, 3490, 3492, 3494, 3496, 3498, 3500, 3502,
+  3504, 3506, 3508, 3510

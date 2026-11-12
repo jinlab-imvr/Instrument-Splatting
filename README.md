@@ -46,11 +46,11 @@ cd ../..
 All runtime model assets are included in the repository: the four instrument CAD models, two sets of initialized GS models, the Gripper-Tip Net checkpoint, ASpanFormer weights, and the AlexNet/LPIPS evaluation weights. The scripts do not download model weights at runtime.
 
 ## Dataset
-Our customized datasets follow the structure in [surgpose_sample](https://drive.google.com/file/d/1qAv-YpouDOFbf7a4epeeuXkx5GW5sCFo/view?usp=sharing). The complete preparation and validation pipeline is documented in [`data_processing/README.md`](data_processing/README.md). Each dataset contains:
+The public dataset release is limited to the 100-frame [surgpose_sample](https://drive.google.com/file/d/1qAv-YpouDOFbf7a4epeeuXkx5GW5sCFo/view?usp=sharing) subset. Its frame selection and the complete preparation pipeline are documented in [`data_preprocessing/README.md`](data_preprocessing/README.md). Each dataset contains:
 1) `color`: left RGB images after stereo rectification;
 2) `mask_all`: mask for overall instruments (not used);
-3) `depth`: optional depth GT with unit of mm, estimated by stereo matching with [MonSter](https://github.com/Junda24/MonSter);
-4) `l_mask`: part-wise mask labeled with [SAM2](https://github.com/facebookresearch/sam2);
+3) `depth`: optional stereo depth maps in mm, estimated with [MonSter](https://github.com/Junda24/MonSter);
+4) `l_mask`: part-wise mask labeled with the [SAM2 Annotation Tool](https://github.com/lala-sean/SAM2_Annotation_Tool);
 5) `mappings.json`: color scalars to part (not used);
 6) `testing_iterations.txt`: iterations for testing phase;
 7) `training_iterations.txt`: iterations for training phase;
